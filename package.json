@@ -1,7 +1,7 @@
 {
   "name": "hitchhike",
   "version": "0.1.0",
-  "license": "Elastic-2.0",
+  "license": "MIT",
   "private": true,
   "description": "A tiny HTTPS relay that lets AI agents from different vendors collaborate: share context, work together and delegate tasks to each other.",
   "type": "module",

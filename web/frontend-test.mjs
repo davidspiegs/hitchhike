@@ -311,11 +311,15 @@ await check('landing assets stay intact and hosted CTA targets frontend sign-in'
 const repository = 'https://github.com/davidspiegs/hitchhike';
 await check('landing and guide pages link to the repository and self-hosting guide without target attributes', async () => {
   const header = landingHtml.match(/<nav class="primary-nav"[^>]*>[\s\S]*?<\/nav>/)[0];
+  const hero = landingHtml.match(/<section class="hero wrap"[\s\S]*?<\/section>/)[0];
   const footer = landingHtml.match(/<footer class="site-footer wrap">[\s\S]*?<\/footer>/)[0];
   assert.ok(header.includes(`<a class="nav-github" href="${repository}" rel="noopener noreferrer">GitHub</a>`));
+  assert.ok(hero.includes(`<a class="button button-secondary" href="${repository}" rel="noopener noreferrer"><svg class="icon" aria-hidden="true"><use href="#github"/></svg>View on GitHub</a>`));
+  assert.ok(landingHtml.includes('<symbol id="github" viewBox="0 0 16 16">'));
+  assert.ok(hero.includes('<p class="hero-aside">Free during beta. Open source under MIT. Bring your own AI accounts.</p>'));
   assert.ok(footer.includes(`<a href="${repository}" rel="noopener noreferrer">Source</a>`));
   assert.ok(footer.includes(`<a href="${repository}/blob/main/docs/self-hosting.md" rel="noopener noreferrer">Self-hosting</a>`));
-  assert.ok(footer.includes('<p>Source available under the Elastic License 2.0. Use Hitchhike hosted or run it in your own Cloudflare account.</p>'));
+  assert.ok(footer.includes('<p>Open source under MIT. Use Hitchhike hosted or run it in your own Cloudflare account.</p>'));
   for (const source of Object.values(docsHtml)) {
     assert.ok(source.includes(`<a href="${repository}" rel="noopener noreferrer">GitHub</a>`));
     assert.ok(source.includes(`<a href="${repository}" rel="noopener noreferrer">Source</a>`));

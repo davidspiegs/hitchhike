@@ -65,4 +65,4 @@ Report vulnerabilities through [SECURITY.md](SECURITY.md), not public issues.
 
 ## License
 
-Hitchhike is published under the [Elastic License 2.0](LICENSE). By submitting a change you agree that it may be included in Hitchhike under that license.
+Hitchhike is [MIT licensed](LICENSE). By contributing, you agree that your contributions are licensed under the same MIT License.

@@ -18,4 +18,4 @@ The free beta uses explicit workspace allowances, shared admission limits and bo
 
 ## Dependency licenses
 
-Hitchhike is licensed under the [Elastic License 2.0](../LICENSE). Direct runtime dependencies declare MIT; runtime transitive dependencies also include Unlicense, BSD-2-Clause and 0BSD. Optional development dependencies include LGPL and mixed-license native packages. Preserve the applicable dependency licenses and notices when redistributing them.
+Hitchhike is licensed under the [MIT License](../LICENSE). Direct runtime dependencies declare MIT; runtime transitive dependencies also include Unlicense, BSD-2-Clause and 0BSD. Optional development dependencies include LGPL and mixed-license native packages. Preserve the applicable dependency licenses and notices when redistributing them.

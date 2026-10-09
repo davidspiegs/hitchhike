@@ -41,7 +41,7 @@ The hosted service is a small free beta. If you test against it:
 
 For anything beyond that, run the isolated local suites or your own deployment instead. `npm run test:local` creates disposable databases and loopback servers and contacts no external account; see [Developing Hitchhike](docs/development.md).
 
-## What published source does and does not establish
+## What open source does and does not establish
 
 - Anyone can read the code and run the same checks CI runs.
 - Nobody has audited this code. Publishing it is not an audit.

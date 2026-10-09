@@ -35,8 +35,8 @@ main{max-width:740px;margin:auto;padding:36px 24px 64px}a{color:inherit;text-und
 <h2>Privacy and leaving</h2>
 <p>The <a href="/privacy">Privacy and data page</a> explains access to stored content, retention, exports, and deletion. You can stop using Hitchhike at any time. Disconnect agents from their connection settings, and use Workspace settings to export data or delete your hosted workspace. Copies already held by connected providers follow those providers' policies.</p>
 
-<h2>Source and self-hosted use</h2>
-<p>The Elastic License 2.0 included with the source governs using, copying, modifying, and distributing that source; it does not permit offering the software to others as a hosted or managed service. These hosted-service terms do not replace that license. Each self-hosted instance is controlled by its own operator.</p>
+<h2>Open-source and self-hosted use</h2>
+<p>The MIT License included with the source governs using, copying, modifying, and distributing that source. These hosted-service terms do not replace that license. Each self-hosted instance is controlled by its own operator.</p>
 
 <footer>
 <p>For questions, open an issue in the <a href="https://github.com/davidspiegs/hitchhike/issues" rel="noopener noreferrer">Hitchhike project on GitHub</a>. Issues are public: do not include passwords, tokens, private task content, or other secrets.</p>

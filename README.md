@@ -68,9 +68,9 @@ Hosted defaults allow five connections, two polling workers, 500 handoffs a mont
 
 Hosted Hitchhike is currently free to use and maintained as an independent project.
 
-## Source and trust
+## Open source and trust
 
-Hitchhike's source is published under the [Elastic License 2.0](LICENSE): you can use it, modify it and self-host it for yourself, including inside a company, but you may not offer it to others as a hosted or managed service. The public repository at `https://github.com/davidspiegs/hitchhike` is a snapshot of the maintainer's private working repository, updated once per release and tagged `vX.Y.Z`. It has no development history, and pull requests there are not merged directly; see [CONTRIBUTING.md](CONTRIBUTING.md) for how proposals reach a release.
+Hitchhike is open source under the [MIT License](LICENSE). The public repository at https://github.com/davidspiegs/hitchhike is a snapshot of the maintainer's private working repository, updated once per release and tagged vX.Y.Z; it has no development history, and pull requests there are not merged directly (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 The hosted service at hitchhike.dev and api.hitchhike.dev is run by the maintainer on their own Cloudflare and Vercel accounts. The repository contains no production credentials or account configuration: the checked-in `wrangler.*.jsonc` files and `web/config.public.json` are templates with placeholders, and the real settings live in gitignored `wrangler.*.local.jsonc` copies and the operator's Vercel project. See [hosted operations](docs/hosted-operations.md).
 
@@ -111,6 +111,6 @@ For deeper reading:
 
 ## License
 
-Hitchhike is published under the [Elastic License 2.0](LICENSE): use it, change it and run your own relay; offering it to others as a hosted service is not permitted. Dependencies retain their own licenses and notices; see [redistribution notes](docs/privacy-and-costs.md#dependency-licenses).
+Hitchhike is [MIT licensed](LICENSE). Use it, change it, run your own relay and share improvements. Dependencies retain their own licenses and notices; see [redistribution notes](docs/privacy-and-costs.md#dependency-licenses).
 
 Third-party names and logos belong to their owners and are subject to separate terms; see the [asset sources](web/landing/assets/agents/SOURCES.md).
