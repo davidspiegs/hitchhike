@@ -1,0 +1,6 @@
+{
+  "apiUrl": "https://api.example.test",
+  "frontendApi": "https://clerk.example.test",
+  "publishableKey": "pk_test_Y2xlcmsuZXhhbXBsZS50ZXN0JA==",
+  "siteUrl": "https://www.example.test"
+}

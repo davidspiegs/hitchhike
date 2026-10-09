@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Change the service name, database ID and PUBLIC_URL before deploying.
+  "name": "my-hitchhike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true, "head_sampling_rate": 0.01 },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-hitchhike",
+      "database_id": "REPLACE_WITH_YOUR_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Lets /healthz report the deployed Worker version ID.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "HOSTED": "false",
+    "ALLOW_DEV_AUTH": "false",
+    "SERVICE_PAUSED": "false",
+    "RELAY_NAME": "My agents",
+    "PUBLIC_URL": "https://YOUR-RELAY-ORIGIN.invalid",
+    "MIN_LEASE_SECONDS": "60"
+  }
+  // Set distinct ADMIN_TOKEN and ENCRYPTION_KEY secrets using this config.
+  // No credentials or references to the existing personal deployment belong here.
+}

@@ -1,0 +1,87 @@
+{
+  "name": "hitchhike",
+  "version": "0.1.0",
+  "license": "Elastic-2.0",
+  "private": true,
+  "description": "A tiny HTTPS relay that lets AI agents from different vendors collaborate: share context, work together and delegate tasks to each other.",
+  "type": "module",
+  "bin": {
+    "relay": "./cli/relay.mjs"
+  },
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "dev:hosted": "wrangler dev --config wrangler.hosted.jsonc --port 8787",
+    "dev:selfhost": "wrangler dev --config wrangler.selfhost.jsonc --port 8787",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote --config wrangler.local.jsonc",
+    "db:hosted:local": "wrangler d1 migrations apply DB --local --config wrangler.hosted.jsonc",
+    "db:hosted:remote": "wrangler d1 migrations apply DB --remote --config wrangler.hosted.local.jsonc",
+    "db:selfhost:local": "wrangler d1 migrations apply DB --local --config wrangler.selfhost.jsonc",
+    "db:selfhost:remote": "wrangler d1 migrations apply DB --remote --config wrangler.selfhost.local.jsonc",
+    "deploy": "wrangler deploy --config wrangler.local.jsonc",
+    "deploy:selfhost": "wrangler deploy --config wrangler.selfhost.local.jsonc",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/e2e.mjs",
+    "test:local": "node scripts/test-local.mjs",
+    "test:auth": "node scripts/auth-unit.mjs",
+    "test:clerk": "node scripts/clerk-auth-unit.mjs",
+    "test:clerk-ui": "node scripts/clerk-ui-unit.mjs",
+    "test:dashboard-ux": "node scripts/dashboard-ux-unit.mjs",
+    "test:connections": "node scripts/connection-settings-unit.mjs",
+    "test:inbox-http": "node scripts/inbox-http-unit.mjs",
+    "test:cli": "node scripts/cli-regression.mjs",
+    "test:workflow": "node scripts/workflow-unit.mjs",
+    "test:delivery": "node scripts/delivery-unit.mjs",
+    "test:maintenance": "node scripts/maintenance-unit.mjs",
+    "demo": "node scripts/demo.mjs",
+    "open": "node scripts/open.mjs",
+    "test:public-pages": "node scripts/public-pages-unit.mjs",
+    "test:production": "node scripts/split-production-smoke.mjs",
+    "build:web": "node web/build.mjs",
+    "test:migration": "node scripts/migration-integration.mjs",
+    "test:production:single-origin": "node scripts/production-smoke.mjs",
+    "test:web": "node web/frontend-test.mjs",
+    "test:conversations": "node scripts/conversations-unit.mjs",
+    "test:collaboration": "node scripts/collaboration-unit.mjs",
+    "test:activation": "node scripts/activation-unit.mjs",
+    "test:platform-guides": "node scripts/platform-guides-unit.mjs",
+    "test:next-http": "node scripts/next-release-http-unit.mjs",
+    "test:next": "npm run test:conversations && npm run test:collaboration && npm run test:activation && npm run test:platform-guides && npm run test:next-http && npm run test:mcp-conversations && npm run test:workspace-ui",
+    "test:mcp-conversations": "node scripts/mcp-conversation-unit.mjs",
+    "test:workspace-ui": "node scripts/workspace-ui-unit.mjs",
+    "test:onboarding-review": "node scripts/owner-retrieval-unit.mjs",
+    "preview:next": "node scripts/preview-next.mjs",
+    "test:parser-security": "node scripts/parser-security-unit.mjs",
+    "test:auth-boundaries": "node scripts/auth-boundary-security-unit.mjs",
+    "test:resource-budgets": "node scripts/resource-budget-unit.mjs",
+    "test:storage-accounting": "node scripts/storage-accounting-unit.mjs",
+    "test:security-boundaries": "node scripts/security-boundary-http-unit.mjs",
+    "test:maintenance-storage": "node scripts/maintenance-storage-unit.mjs",
+    "test:transition-permissions": "node scripts/transition-permissions-unit.mjs",
+    "test:hardening": "npm run test:parser-security && npm run test:auth-boundaries && npm run test:resource-budgets && npm run test:storage-accounting && npm run test:security-boundaries && npm run test:maintenance-storage && npm run test:transition-permissions",
+    "test:release-snapshot": "node scripts/release-snapshot-unit.mjs",
+    "release:snapshot": "node scripts/release-snapshot.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260925.1",
+    "esbuild": "0.28.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.144.0"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@clerk/backend": "^3.20.1",
+    "hono": "^4.13.9"
+  },
+  "engines": {
+    "node": "^22.16.0 || >=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidspiegs/hitchhike.git"
+  },
+  "bugs": {
+    "url": "https://github.com/davidspiegs/hitchhike/issues"
+  },
+  "homepage": "https://hitchhike.dev"
+}

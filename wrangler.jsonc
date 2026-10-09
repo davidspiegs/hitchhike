@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Neutral self-host template. Configure your own service/database/origin.
+  "name": "my-hitchhike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true, "head_sampling_rate": 0.01 },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-hitchhike",
+      "database_id": "REPLACE_WITH_YOUR_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Lets /healthz report the deployed Worker version ID.
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  // Maintenance: expired leases, scheduled tasks and retention.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "HOSTED": "false",
+    "ALLOW_DEV_AUTH": "false",
+    "SERVICE_PAUSED": "false",
+    "RELAY_NAME": "My agents",
+    "PUBLIC_URL": "https://YOUR-RELAY-ORIGIN.invalid",
+    "MIN_LEASE_SECONDS": "60"
+  }
+  // Set distinct ADMIN_TOKEN and ENCRYPTION_KEY secrets before deployment.
+  // Hosted service configuration lives separately in wrangler.hosted.jsonc.
+}

@@ -1,0 +1,45 @@
+# Local development only. Copy to .dev.vars; never commit real credentials.
+# Legacy self-host mode:
+HOSTED=false
+SIGNUP_MODE=public
+SERVICE_PAUSED=false
+ADMIN_TOKEN=replace-with-a-random-local-owner-token
+ENCRYPTION_KEY=replace-with-a-separate-random-encryption-key
+PUBLIC_URL=http://127.0.0.1:8787
+MIN_LEASE_SECONDS=1
+
+# Hosted mode uses human sessions and per-connection authorization.
+# Set HOSTED=true above only when testing hosted setup.
+# Direct Google is the default hosted provider. Self-host admin mode needs neither.
+AUTH_PROVIDER=google
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# Optional hosted Clerk setup: change AUTH_PROVIDER to clerk.
+# These must all belong to the same Clerk instance; never commit real values.
+# CLERK_ISSUER is its exact HTTPS Frontend API origin, with no path.
+CLERK_PUBLISHABLE_KEY=
+CLERK_SECRET_KEY=
+CLERK_ISSUER=
+# Optional public PEM verification key and signed lifecycle-event secret:
+# CLERK_JWT_KEY=
+# CLERK_WEBHOOK_SIGNING_SECRET=
+# Explicitly opt in only when using development keys on a non-loopback preview.
+# Keep false for public launch; development users do not migrate to production.
+CLERK_ALLOW_DEVELOPMENT=false
+
+# Public signup is the default; no email allowlist is required.
+# Optional restricted deployment: SIGNUP_MODE=invite and BETA_EMAILS=a@example.com,b@example.com
+# BETA_EMAILS=
+
+# Hosted webhooks currently remain disabled, even if this allowlist is populated.
+# For legacy operator hardening/future reviewed support, exact hostnames only.
+# Example: WAKE_ALLOWED_HOSTS=hooks.provider.example,api.provider.example
+WAKE_ALLOWED_HOSTS=
+
+# Explicitly disabled. The isolated test runner enables this only on loopback.
+# Never enable it on a publicly reachable Worker.
+ALLOW_DEV_AUTH=false
+
+# Optional prior encryption key during a controlled key rotation:
+# ENCRYPTION_KEY_PREVIOUS=

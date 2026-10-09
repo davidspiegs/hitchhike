@@ -1,0 +1,44 @@
+name: Local verification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:auth
+      - run: npm run test:clerk
+      - run: npm run test:clerk-ui
+      - run: npm run test:dashboard-ux
+      - run: npm run test:connections
+      - run: npm run test:inbox-http
+      - run: npm run test:cli
+      - run: npm run test:workflow
+      - run: npm run test:migration
+      - run: npm run test:web
+      - run: npm run test:public-pages
+      - run: npm run test:delivery
+      - run: npm run test:maintenance
+      - run: npm run test:next
+      - run: npm run test:onboarding-review
+      - run: npm run test:hardening
+      - run: npm run test:release-snapshot
+      - run: npm run test:local
+        env:
+          WRANGLER_SEND_METRICS: "false"

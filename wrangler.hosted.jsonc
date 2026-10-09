@@ -1,0 +1,79 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "my-hitchhike-hosted",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "limits": { "cpu_ms": 250 },
+  "observability": { "enabled": true, "head_sampling_rate": 0.01 },
+  "ratelimits": [
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "2026100204", "simple": { "limit": 60, "period": 60 } },
+    { "name": "GLOBAL_RATE_LIMITER", "namespace_id": "2026100205", "simple": { "limit": 600, "period": 60 } },
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "2026092501",
+      "simple": { "limit": 120, "period": 60 }
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "my-hitchhike-hosted",
+      // Create this separate database, then replace its placeholder ID.
+      "database_id": "REPLACE_WITH_HOSTED_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Lets /healthz report the deployed Worker version ID. Pass the git release at deploy time:
+  // wrangler deploy --config wrangler.hosted.local.jsonc --var HITCHHIKE_RELEASE:"$(git rev-parse --short=12 HEAD)"
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "HOSTED": "true",
+    // Optional managed identity: set clerk and configure the matching instance below.
+    "AUTH_PROVIDER": "google",
+    "CLERK_ALLOW_DEVELOPMENT": "false",
+    "SIGNUP_MODE": "public",
+    "RELAY_NAME": "Hitchhike",
+    // Replace this with the chosen HTTPS origin before registration/deploy.
+    "PUBLIC_URL": "https://CONFIGURE-HOSTED-ORIGIN.invalid",
+    "ALLOW_DEV_AUTH": "false",
+    "SERVICE_PAUSED": "false",
+    "NEW_WORK_PAUSED": "false",
+    "HOSTED_WORKSPACE_LIMIT": "20",
+    // Enable only for new workspaces after validating the next-release rollout.
+    "NEXT_RELEASE_DEFAULT_ENABLED": "false",
+    "HOSTED_ACTIVATION_ENABLED": "false",
+    "HOSTED_ACTIVATION_DAILY_LIMIT": "50",
+    "HOSTED_ACTIVATION_WORKSPACE_DAILY_LIMIT": "10",
+    "DEFAULT_DAILY_JOB_LIMIT": "50",
+    "DEFAULT_MONTHLY_JOB_LIMIT": "500",
+    "DEFAULT_STORAGE_LIMIT_BYTES": "33554432",
+    "RESOURCE_GLOBAL_DAILY_OPERATIONS": "100000",
+    "RESOURCE_GLOBAL_MONTHLY_OPERATIONS": "2000000",
+    "RESOURCE_WORKSPACE_DAILY_OPERATIONS": "4000",
+    "RESOURCE_WORKSPACE_MONTHLY_OPERATIONS": "100000",
+    "RESOURCE_ESSENTIAL_RESERVE_PERCENT": "10",
+    "RESOURCE_ANONYMOUS_DAILY_OPERATIONS": "10000",
+    "RESOURCE_ANONYMOUS_MONTHLY_OPERATIONS": "300000",
+    "RESOURCE_OWNER_GLOBAL_DAILY_OPERATIONS": "20000",
+    "RESOURCE_OWNER_GLOBAL_MONTHLY_OPERATIONS": "300000",
+    "RESOURCE_OWNER_WORKSPACE_DAILY_OPERATIONS": "2000",
+    "RESOURCE_OWNER_WORKSPACE_MONTHLY_OPERATIONS": "30000",
+    "RESOURCE_MAINTENANCE_DAILY_OPERATIONS": "20000",
+    "RESOURCE_MAINTENANCE_MONTHLY_OPERATIONS": "500000",
+    // Reserved for reviewed webhook support; setting this does not enable hosted delivery.
+    "WAKE_ALLOWED_HOSTS": "",
+    "MIN_LEASE_SECONDS": "60"
+  }
+  // Copy to ignored wrangler.hosted.local.jsonc and use that --config path.
+  // Always set ENCRYPTION_KEY with wrangler secret put.
+  // AUTH_PROVIDER=google: GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.
+  // AUTH_PROVIDER=clerk: CLERK_PUBLISHABLE_KEY, CLERK_SECRET_KEY, CLERK_ISSUER.
+  // CLERK_ISSUER must be the exact HTTPS Clerk Frontend API origin, no path.
+  // Optional Clerk values: CLERK_JWT_KEY (public PEM), CLERK_WEBHOOK_SIGNING_SECRET.
+  // Production Clerk needs an owned domain/DNS and its own social-provider credentials.
+  // Put social credentials in Clerk, not in direct-Google Worker variables.
+  // BETA_EMAILS is optional and consulted only with SIGNUP_MODE="invite".
+  // Optional rotation support: ENCRYPTION_KEY_PREVIOUS.
+  // Do not set ADMIN_TOKEN or enable ALLOW_DEV_AUTH on a hosted deployment.
+}
