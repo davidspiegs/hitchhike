@@ -505,6 +505,23 @@ try {
     assert.equal(genericConsent.targetAgentId, null);
     assert.deepEqual(genericConsent.agents.map(agent => agent.id).sort(), ["split-grok", "split-other"], "Providers omitting resource keep the explicit owner choice");
   });
+  await check("in split mode an anonymous link for a metadata-document client fetches and stores nothing", async () => {
+    const frontend = "https://app.example.test", settings = { ...env, FRONTEND_URL: frontend };
+    const documentClient = "https://apps.example.com/oauth/client.json";
+    const query = new URLSearchParams({ client_id: documentClient, redirect_uri: "https://apps.example.com/oauth/callback", response_type: "code", code_challenge: challenge, code_challenge_method: "S256", scope: "relay:read" });
+    const stub = globalThis.fetch;
+    let outbound = 0;
+    globalThis.fetch = (...args) => { outbound++; return stub(...args); };
+    try {
+      const anonymous = await handle(request("/oauth/authorize?" + query), settings);
+      assert.equal(anonymous.status, 303);
+      const connect = new URL(anonymous.headers.get("location"));
+      assert.equal(connect.origin + connect.pathname, frontend + "/connect");
+      assert.equal(connect.searchParams.get("client_id"), documentClient);
+    } finally { globalThis.fetch = stub; }
+    assert.equal(outbound, 0, "No outbound request before sign-in");
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM oauth_clients WHERE id=?").get(documentClient).n, 0);
+  });
   await check("a brand-new owner creates a connection from generic consent and finishes OAuth in one pass", async () => {
     const frontend = "https://app.example.test", settings = { ...env, FRONTEND_URL: frontend };
     const signed = await session(fixture("split_first"), { claims: { azp: frontend }, settings });

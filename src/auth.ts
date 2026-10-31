@@ -59,10 +59,14 @@ const GOOGLE_USERINFO = "https://openidconnect.googleapis.com/v1/userinfo";
 // daily allowance. Authorized clients belong to accounts with grant limits.
 const UNCLAIMED_REGISTRATIONS_PER_DAY = 2000;
 const UNCLAIMED_RETENTION = 7 * DAY;
-// Metadata documents are cached per client application, not per connection.
+// Metadata documents are cached per client application, not per connection,
+// for at most an hour, so an unused one soon leaves the shared lane.
 const UNCLAIMED_METADATA_CLIENTS = 500;
 const METADATA_MAX_BYTES = 5120;
-const METADATA_DEFAULT_TTL = HOUR;
+const METADATA_MAX_TTL = HOUR;
+// An unused document outlives its cache by one consent window (10 minutes),
+// so an approval already in progress can still record its grant.
+const METADATA_UNUSED_GRACE = 15 * 60_000;
 const CLIENT_ID_MAX = 512;
 const encoder = new TextEncoder();
 
@@ -452,11 +456,16 @@ function metadataClientUrl(value: string): URL | null {
   if (/(?:^|\.)(?:localhost|local|internal|intranet|lan|home|corp|arpa|invalid|test|example|onion)$/.test(host)) return null;
   return url;
 }
+/** Non-loopback callbacks stay on the origin that published the document. */
+function metadataCallbackAllowed(url: URL, value: string): boolean {
+  const callback = new URL(value);
+  return callback.origin === url.origin || (callback.protocol === "http:" && localHost(callback.hostname));
+}
 function cacheLifetime(header: string | null): number {
   const value = (header ?? "").toLowerCase();
   if (/(?:^|,)\s*(?:no-store|no-cache|private)\s*(?:,|$)/.test(value)) return 0;
   const maxAge = /(?:^|,)\s*max-age=(\d{1,10})\s*(?:,|$)/.exec(value)?.[1];
-  return maxAge === undefined ? METADATA_DEFAULT_TTL : Math.min(DAY,Number(maxAge) * 1000);
+  return maxAge === undefined ? METADATA_MAX_TTL : Math.min(METADATA_MAX_TTL,Number(maxAge) * 1000);
 }
 /** Fetches and validates the document. Errors are never cached. */
 async function fetchClientMetadata(url: URL, now: number): Promise<{name:string;redirectUris:string[];expiresAt:number}> {
@@ -482,8 +491,7 @@ async function fetchClientMetadata(url: URL, now: number): Promise<{name:string;
   if (doc.grant_types !== undefined && (!Array.isArray(doc.grant_types) || !doc.grant_types.includes("authorization_code") || !doc.grant_types.every((g) => ["authorization_code","refresh_token"].includes(g)))) return unusable();
   if (doc.response_types !== undefined && (!Array.isArray(doc.response_types) || doc.response_types.some((r) => r !== "code"))) return unusable();
   const redirects = doc.redirect_uris;
-  // Non-loopback callbacks stay on the origin that published the document.
-  if (!Array.isArray(redirects) || redirects.length < 1 || redirects.length > 10 || !redirects.every((r) => validRedirect(r) && (new URL(r).origin === url.origin || (new URL(r).protocol === "http:" && localHost(new URL(r).hostname))))) return unusable();
+  if (!Array.isArray(redirects) || redirects.length < 1 || redirects.length > 10 || !redirects.every((r) => validRedirect(r) && metadataCallbackAllowed(url,r))) return unusable();
   const name = typeof doc.client_name === "string" && doc.client_name.trim() ? doc.client_name.trim().slice(0,100) : url.hostname;
   return {name,redirectUris:[...new Set(redirects as string[])],expiresAt:now + cacheLifetime(response.headers.get("Cache-Control"))};
 }
@@ -519,13 +527,25 @@ function registeredRedirect(client: Client, redirectUri: string): boolean {
     return candidate.href === requested.href;
   });
 }
-async function oauthClient(request: Request, env: AuthEnv, clientId: string): Promise<Client | null> {
-  if (clientId.length > CLIENT_ID_MAX) return null;
+function documentClientUrl(request: Request, clientId: string): URL | null {
   const url = metadataClientUrl(clientId);
   // The relay never fetches a document from itself.
-  if (url && url.hostname !== new URL(request.url).hostname) return metadataClient(request,env,url);
+  return url && url.hostname !== new URL(request.url).hostname ? url : null;
+}
+async function oauthClient(request: Request, env: AuthEnv, clientId: string): Promise<Client | null> {
+  if (clientId.length > CLIENT_ID_MAX) return null;
+  const url = documentClientUrl(request,clientId);
+  if (url) return metadataClient(request,env,url);
   if (clientId.startsWith("https://")) return null;
   return env.DB.prepare(`SELECT * FROM oauth_clients WHERE id=? AND metadata_expires_at IS NULL`).bind(clientId).first<Client>();
+}
+/** The request's client for a signed-in owner: the only point that fetches a
+ * metadata document, so an anonymous link cannot fetch or cache one. */
+async function signedInClient(request: Request, env: AuthEnv, registered: Client | null, data: AuthRequest): Promise<Client> {
+  if (registered) return registered;
+  const client = await oauthClient(request,env,data.clientId);
+  if (!client || !registeredRedirect(client,data.redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
+  return client;
 }
 const metadataClientHost = (client: Client): string | null => client.metadata_expires_at == null ? null : new URL(client.id).hostname;
 
@@ -548,15 +568,18 @@ function parseScope(value: string | null): string[] {
   if (!scopes.some((s) => s.startsWith("relay:"))) fail(400,"invalid_scope","Request at least one relay permission.");
   return scopes;
 }
-async function authorizationRequest(request: Request, env: AuthEnv): Promise<{client:Client;data:AuthRequest}> {
+/** Validates a request without any network call. A registered client is looked
+ * up here; a metadata-document client is only checked for a callback on its own
+ * origin, and its document is fetched after sign-in (`signedInClient`). */
+async function authorizationRequest(request: Request, env: AuthEnv): Promise<{client:Client|null;data:AuthRequest}> {
   const url = new URL(request.url), p = url.searchParams, base = origin(request,env);
   for (const key of p.keys()) if (p.getAll(key).length !== 1) fail(400,"invalid_request","Duplicate parameters are not allowed.");
   const clientId = p.get("client_id") ?? "", redirectUri = p.get("redirect_uri") ?? "";
   if (clientId.length > CLIENT_ID_MAX) fail(400,"invalid_client","Unknown client.");
-  // Reject malformed callbacks before any metadata document is fetched.
   if (!validRedirect(redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
-  const client = await oauthClient(request,env,clientId);
-  if (!client || !registeredRedirect(client,redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
+  const document = documentClientUrl(request,clientId);
+  const client = document ? null : await oauthClient(request,env,clientId);
+  if (document ? !metadataCallbackAllowed(document,redirectUri) : !client || !registeredRedirect(client,redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
   if (p.get("response_type") !== "code") fail(400,"unsupported_response_type","Use the authorization-code flow.");
   const pkce = p.get("code_challenge") ?? "";
   if (p.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(pkce)) fail(400,"invalid_request","S256 PKCE is required.");
@@ -574,7 +597,7 @@ function returnToClient(data: AuthRequest, base: string, values: Record<string,s
   return asJson ? json({redirectUrl:url.toString()}) : redirect(url.toString());
 }
 async function authorizeGet(request: Request, env: AuthEnv): Promise<Response> {
-  const {client,data} = await authorizationRequest(request,env);
+  const {client:registered,data} = await authorizationRequest(request,env);
   const url=new URL(request.url), returnTo=safeReturn(url.pathname+url.search,url.origin);
   const {frontendOrigin,split}=deploymentOrigins(env,url.origin);
   const asJson=split && wantsJson(request);
@@ -590,6 +613,7 @@ async function authorizeGet(request: Request, env: AuthEnv): Promise<Response> {
   // clean navigation preserves those cookies without echoing a handshake.
   if (!asJson && returnTo!==url.pathname+url.search) return redirect(returnTo);
   await throttle(request,env,"consent",60);
+  const client = await signedInClient(request,env,registered,data);
   // The canonical resource carries a target chosen in Hitchhike. Client names
   // and provider labels are not identity evidence. Missing resource stays on
   // the compatible generic flow with an explicit owner choice.
@@ -932,7 +956,7 @@ export async function cleanupAuth(env: AuthEnv, now = Date.now()): Promise<void>
     env.DB.prepare(`DELETE FROM oauth_clients WHERE created_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - 30 * DAY),
     env.DB.prepare(`DELETE FROM oauth_clients WHERE claimed_at IS NULL AND metadata_expires_at IS NULL AND created_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - UNCLAIMED_RETENTION),
     // A metadata row is a cache; an unreferenced one is fetched again on use.
-    env.DB.prepare(`DELETE FROM oauth_clients WHERE metadata_expires_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - DAY),
+    env.DB.prepare(`DELETE FROM oauth_clients WHERE metadata_expires_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - METADATA_UNUSED_GRACE),
   ]);
   const pending=await env.DB.prepare(`SELECT user_id,workspace_id FROM account_deletions ORDER BY created_at LIMIT 3`).all<{user_id:string;workspace_id:string}>();
   for(const row of pending.results) { try { await finishHumanDeletion(env,row.user_id,row.workspace_id); } catch { /* durable marker retries next run */ } }

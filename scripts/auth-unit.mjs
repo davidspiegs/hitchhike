@@ -431,6 +431,41 @@ try {
     assert.equal(clientCount("id=?","https://apps.example.com/oauth/fresh.json"),0);
     assert.equal(clientCount("id=?",metadataUrl),1,"A document client with grants stays listed");
   });
+  await check("an anonymous authorization link never fetches or stores a client document",async () => {
+    sqlite.exec("DELETE FROM auth_rate_limits");
+    globalThis.fetch = metadataFetch;
+    const unseen = "https://apps.example.com/oauth/unseen.json", callback = "https://apps.example.com/oauth/callback";
+    const link = (redirect) => handle(req(authorizeUrl({client_id:unseen,redirect_uri:redirect})));
+    serve = () => Response.json({...metadataDocument(),client_id:unseen});
+    try {
+      const before = fetches.length;
+      const anonymous = await link(callback);
+      assert.equal(anonymous.status,303); assert.match(anonymous.headers.get("Location"),/^\/auth\/start\?/);
+      // A callback off the document's origin is refused before sign-in, still without a request.
+      assert.equal((await link("https://elsewhere.example.com/callback")).status,400);
+      assert.equal(fetches.length,before); assert.equal(clientCount("id=?",unseen),0);
+      assert.equal((await metadataAuthorize(callback,unseen)).status,200,"After sign-in the same link fetches the document");
+      assert.equal(fetches.length,before + 1); assert.equal(clientCount("id=?",unseen),1);
+    } finally { globalThis.fetch = originalFetch; serve = () => Response.json(metadataDocument()); }
+  });
+  await check("documents are cached for at most an hour and unused ones leave one consent window later",async () => {
+    sqlite.exec("DELETE FROM auth_rate_limits");
+    globalThis.fetch = metadataFetch;
+    const long = "https://apps.example.com/oauth/long.json";
+    serve = () => Response.json({...metadataDocument(),client_id:long},{headers:{"Cache-Control":"public, max-age=86400"}});
+    let expires;
+    try {
+      const fetchedAt = Date.now();
+      assert.equal((await metadataAuthorize("https://apps.example.com/oauth/callback",long)).status,200);
+      expires = sqlite.prepare("SELECT metadata_expires_at FROM oauth_clients WHERE id=?").get(long).metadata_expires_at;
+      assert.ok(expires >= fetchedAt + 3_599_000 && expires <= Date.now() + 3_600_000,"A day-long max-age is capped at an hour");
+    } finally { globalThis.fetch = originalFetch; serve = () => Response.json(metadataDocument()); }
+    await auth.cleanupAuth(env,expires + 10 * 60_000);
+    assert.equal(clientCount("id=?",long),1,"An approval still in progress can record its grant");
+    await auth.cleanupAuth(env,expires + 16 * 60_000);
+    assert.equal(clientCount("id=?",long),0);
+    assert.equal(clientCount("id=?",metadataUrl),1,"A document client with grants stays");
+  });
   await check("account deletion removes sessions and all grant material for the owner only",async () => {
     const before = sqlite.prepare("SELECT count(*) AS n FROM users").get().n;
     await assert.rejects(auth.deleteHumanAccount(env,alice.user.id,bob.workspace.id));
