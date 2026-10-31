@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hitchhike": {
+      "type": "http",
+      "url": "https://api.hitchhike.dev/mcp"
+    }
+  }
+}

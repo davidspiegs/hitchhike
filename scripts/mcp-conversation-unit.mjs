@@ -88,6 +88,20 @@ try {
     assert.equal((await call('claude','claim_request',{request_id:'x',consumer_id:'bad consumer'})).error.code,-32602);
     assert.equal((await call('cleo','get_collaboration_config',{agent_id:'claude'})).error.code,-32602);
   });
+  await check('tool descriptions say what each tool returns; operating guidance stays in server instructions', async () => {
+    const tools = await catalog(), description = name => tools.find(tool => tool.name === name).description;
+    // Directory review rejects descriptions that direct the model to call
+    // tools or to fetch behavioral instructions.
+    for (const name of ['get_next_job','get_collaboration_config']) {
+      assert.doesNotMatch(description(name), /\b(?:then call|do the work|refresh|at the start of work|before continuing|instructions)\b/i, name);
+    }
+    assert.match(description('get_next_job'), /^Claims the next job\b.*\bclaim_id\b/);
+    assert.match(description('get_collaboration_config'), /^Returns this connection's current owner-configured collaboration settings/);
+    assert.equal(tools.find(tool => tool.name === 'get_collaboration_config').title, 'Read collaboration settings');
+    const { instructions } = (await rpc('cleo','initialize')).result;
+    assert.match(instructions, /Use get_next_job to take one, follow its rules, and finish with submit_result, ask_question, or give_up\./);
+    assert.match(instructions, /Refresh get_collaboration_config before starting or continuing work/);
+  });
   let sent, claimed;
   await check('a message creates one directed request and retries retain its conversation', async () => {
     sent = data(await call('cleo','send_message',{to:'claude',message:'Review this synthetic plan.',type:'review',idempotency_key:'roundtrip'}));

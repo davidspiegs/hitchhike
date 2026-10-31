@@ -6,12 +6,22 @@ import { fileURLToPath } from 'node:url';
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_ASSETS = '/_hitchhike-assets/';
+const ENTRY = 'src/app.js';
 const ASSETS = [
-  'styles.css', 'src/app.js', 'src/demo.js', 'assets/hitchhike-bus-logo.png', 'assets/hitchhike-bus-mark.png', 'assets/hitchhike-bus-conversation.png',
-  'assets/hitchhike-share.jpg',
-  ...['chatgpt.svg', 'muse.svg', 'grok-bot.svg', 'claude.svg', 'grok.png', 'codex.png', 'claude-code.png', 'droid.svg', 'omp.svg']
+  'styles.css', ENTRY, 'src/demo.js', 'src/sign.js', 'src/motion.js',
+  'assets/hitchhike-bus-logo.png', 'assets/hitchhike-bus-mark.png', 'assets/hitchhike-bus-conversation.png',
+  'assets/hitchhike-share.jpg', 'assets/hitchhike-wordmark.png', 'assets/hitchhike-bus-mark.svg',
+  ...['chatgpt.svg', 'muse.svg', 'grok-bot.svg', 'claude.svg', 'grok.png', 'codex.png', 'claude-code.png', 'droid.svg', 'omp.svg',
+    'pi.svg', 'openclaw.svg']
     .map((name) => 'assets/agents/' + name),
+  ...['InterDisplay-ExtraBold', 'InterDisplay-SemiBold', 'Inter-Regular', 'Inter-Medium', 'Inter-SemiBold',
+    'JetBrainsMono-Medium', 'JetBrainsMono-SemiBold']
+    .map((name) => `assets/fonts/${name}.woff2`),
 ];
+const MODULES = ASSETS.filter((path) => path.startsWith('src/') && path !== ENTRY);
+// Static `from './x.js'`, side-effect `import './x.js'` and dynamic `import('./x.js')` specifiers.
+const RELATIVE_IMPORT = /(\bfrom\s*|\bimport\s*\(?\s*)(['"])\.\/([^'"]+)\2/;
+const CSS_ASSET_URL = /url\(\s*(['"]?)\.\/(assets\/[^'")\s]+)\1\s*\)/g;
 const digest = (content) => createHash('sha256').update(content).digest('hex').slice(0, 16);
 
 export async function buildLanding({ root = defaultRoot, output = resolve(root, 'dist') } = {}) {
@@ -24,16 +34,37 @@ export async function buildLanding({ root = defaultRoot, output = resolve(root, 
     return filename;
   }
 
-  // Hash dependencies first. The app's hash must cover its final import URL,
-  // so changing demo.js also changes the entry module requested by the HTML.
-  const demo = addAsset('src/demo.js', await readFile(resolve(root, 'src/demo.js')));
-  const app = await readFile(resolve(root, 'src/app.js'), 'utf8');
-  const rewrittenApp = app.replace(/(['"])\.\/demo\.js\1/g, (_, quote) => `${quote}./${demo}${quote}`);
-  assert.notEqual(rewrittenApp, app, 'Expected the app entry to import ./demo.js');
-  addAsset('src/app.js', rewrittenApp);
-  for (const source of ASSETS.filter((path) => !path.startsWith('src/'))) {
+  // Hash dependencies before their dependants. An entry's hash must cover its
+  // final import URLs, so changing demo.js also changes the module the HTML
+  // requests; the stylesheet's hash likewise covers its font and image URLs.
+  for (const source of ASSETS.filter((path) => path !== 'styles.css' && !path.startsWith('src/'))) {
     addAsset(source, await readFile(resolve(root, source)));
   }
+  for (const source of MODULES) {
+    const module = await readFile(resolve(root, source), 'utf8');
+    assert.doesNotMatch(module, RELATIVE_IMPORT, `${source} must not import relative modules; only ${ENTRY} is rewritten`);
+    addAsset(source, module);
+  }
+  const imported = new Set();
+  const app = (await readFile(resolve(root, ENTRY), 'utf8')).replace(new RegExp(RELATIVE_IMPORT, 'g'), (_, prefix, quote, name) => {
+    const dependency = generated.get('src/' + name);
+    assert.ok(dependency, `${ENTRY} imports ./${name}, which is not a hashed module`);
+    imported.add('src/' + name);
+    return `${prefix}${quote}./${dependency.filename}${quote}`;
+  });
+  for (const source of MODULES) {
+    assert.ok(imported.has(source), `Expected the app entry to import ./${basename(source)}`);
+  }
+  addAsset(ENTRY, app);
+
+  const css = (await readFile(resolve(root, 'styles.css'), 'utf8')).replace(CSS_ASSET_URL, (_, quote, source) => {
+    const asset = generated.get(source);
+    assert.ok(asset, `styles.css references ./${source}, which is not a hashed asset`);
+    // The stylesheet and its assets share PUBLIC_ASSETS, so the URL stays relative.
+    return `url(${quote}./${asset.filename}${quote})`;
+  });
+  assert.doesNotMatch(css, /url\(\s*['"]?\.\/assets\//, 'Unversioned asset URL in styles.css');
+  addAsset('styles.css', css);
 
   let html = await readFile(resolve(root, 'index.html'), 'utf8');
   for (const [source, { filename }] of generated) {

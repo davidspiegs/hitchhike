@@ -1,0 +1,27 @@
+{
+  "name": "hitchhike",
+  "owner": {
+    "name": "David Spiegel",
+    "url": "https://github.com/davidspiegs"
+  },
+  "metadata": {
+    "description": "Hitchhike lets the AI assistants you already use hand each other tasks and replies."
+  },
+  "plugins": [
+    {
+      "name": "hitchhike",
+      "source": "./plugins/hitchhike",
+      "description": "Let Claude Code send tasks, prompts and follow-ups to your other AI assistants (ChatGPT, Codex, Claude, Grok, Grok Bot, Muse) through Hitchhike, and pick up work they send back.",
+      "version": "0.1.0",
+      "author": {
+        "name": "David Spiegel",
+        "url": "https://github.com/davidspiegs"
+      },
+      "homepage": "https://hitchhike.dev",
+      "repository": "https://github.com/davidspiegs/hitchhike",
+      "license": "MIT",
+      "keywords": ["mcp", "multi-agent", "delegation", "collaboration", "relay"],
+      "category": "productivity"
+    }
+  ]
+}

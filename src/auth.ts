@@ -8,6 +8,7 @@ import { safeAuthReturn, safeFrontendReturn } from "./auth-return";
 import { deploymentOrigins, OriginConfigurationError } from "./origins";
 import { assertAnonymousResourceOperation, assertResourceOperation, ResourceBudgetError } from "./budgets";
 import { DEFAULT_HOSTED_STORAGE_LIMIT_BYTES } from "./storage-accounting";
+import { PLATFORMS, type PlatformId } from "./platforms";
 
 export type AuthEnv = Env & ClerkEnv & {
   AUTH_PROVIDER?: string;
@@ -41,7 +42,7 @@ export interface OAuthIdentity {
   scopes: string[];
 }
 type User = { id: string; identity_key: string; email: string; name: string; workspace_id: string; identity_checked_at: number };
-type Client = { id: string; name: string; redirect_uris: string };
+type Client = { id: string; name: string; redirect_uris: string; metadata_expires_at?: number | null };
 type Grant = { id: string; user_id: string; workspace_id: string; agent_id: string; auth_generation: number; client_id: string; scope: string; resource: string; revoked_at: number | null };
 type TenantAgent = AgentRow & { workspace_id: string; auth_generation: number };
 type AuthRequest = { clientId: string; redirectUri: string; state: string; challenge: string; scope: string; resource: string };
@@ -54,6 +55,15 @@ const ALL_SCOPES = ["relay:read", "relay:send", "relay:work", "offline_access"];
 const GOOGLE_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO = "https://openidconnect.googleapis.com/v1/userinfo";
+// Registrations nobody has authorized are anonymous; only they share a rolling
+// daily allowance. Authorized clients belong to accounts with grant limits.
+const UNCLAIMED_REGISTRATIONS_PER_DAY = 2000;
+const UNCLAIMED_RETENTION = 7 * DAY;
+// Metadata documents are cached per client application, not per connection.
+const UNCLAIMED_METADATA_CLIENTS = 500;
+const METADATA_MAX_BYTES = 5120;
+const METADATA_DEFAULT_TTL = HOUR;
+const CLIENT_ID_MAX = 512;
 const encoder = new TextEncoder();
 
 /** A public routing identifier, never a credential. Keep one canonical path. */
@@ -149,21 +159,27 @@ async function challenge(verifier: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier)));
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 }
-async function limitedBody(request: Request): Promise<string> {
-  if (Number(request.headers.get("Content-Length") ?? 0) > 16384) fail(413,"invalid_request","Request is too large.");
-  if (!request.body) return "";
-  const reader = request.body.getReader();
+/** null when the stream exceeds max; reading stops at the limit. */
+async function readLimited(body: ReadableStream<Uint8Array> | null, max: number): Promise<string | null> {
+  if (!body) return "";
+  const reader = body.getReader();
   let count = 0;
   const chunks: Uint8Array[] = [];
   for (;;) {
     const {done,value} = await reader.read(); if (done) break;
     count += value.byteLength;
-    if (count > 16384) { await reader.cancel(); fail(413,"invalid_request","Request is too large."); }
+    if (count > max) { await reader.cancel(); return null; }
     chunks.push(value);
   }
   const bytes = new Uint8Array(count); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.length; }
   return new TextDecoder().decode(bytes);
+}
+async function limitedBody(request: Request): Promise<string> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > 16384) fail(413,"invalid_request","Request is too large.");
+  const text = await readLimited(request.body,16384);
+  if (text === null) fail(413,"invalid_request","Request is too large.");
+  return text;
 }
 async function formBody(request: Request): Promise<URLSearchParams> {
   if (!(request.headers.get("Content-Type") ?? "").startsWith("application/x-www-form-urlencoded")) fail(415,"invalid_request","Use an application/x-www-form-urlencoded request.");
@@ -413,11 +429,119 @@ async function register(request: Request, env: AuthEnv): Promise<Response> {
   // Public allocation uses its own small lane; exhausting registration must
   // not spend the authenticated allowance needed to refresh an existing grant.
   await assertAnonymousResourceOperation(env,now);
+  // Authorized clients never count, so growth in real connections cannot lock
+  // out new users. A flood of abandoned registrations expires within a day.
   const inserted=await env.DB.prepare(`INSERT INTO oauth_clients(id,name,redirect_uris,created_at)
-    SELECT ?,?,?,? WHERE (SELECT COUNT(*) FROM oauth_clients)<1000`).bind(id,name || "MCP client",JSON.stringify([...new Set(redirects)]),now).run();
+    SELECT ?1,?2,?3,?4 WHERE (SELECT COUNT(*) FROM oauth_clients
+      WHERE claimed_at IS NULL AND metadata_expires_at IS NULL AND created_at>?5)<?6`).bind(id,name || "MCP client",JSON.stringify([...new Set(redirects)]),now,now - DAY,UNCLAIMED_REGISTRATIONS_PER_DAY).run();
   if (!inserted.meta.changes) fail(429,"client_capacity","Client registration is temporarily at capacity.");
   return json({client_id:id,client_id_issued_at:Math.floor(now / 1000),client_name:name || "MCP client",redirect_uris:[...new Set(redirects)],token_endpoint_auth_method:"none",grant_types:["authorization_code","refresh_token"],response_types:["code"]},201);
 }
+
+/** A Client ID Metadata Document URL (draft-ietf-oauth-client-id-metadata-document).
+ * Registered IDs never start with https://. Only canonical spellings on the
+ * default port of a public DNS name are fetched; the Worker cannot reach
+ * private networks, and IP literals and special-use names are refused here. */
+function metadataClientUrl(value: string): URL | null {
+  if (!value.startsWith("https://") || value.length > CLIENT_ID_MAX || /[?#]/.test(value)) return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  const host = url.hostname;
+  if (url.href !== value || url.username || url.password || url.port || url.pathname === "/") return null;
+  if (!/^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/.test(host)) return null;
+  if (/(?:^|\.)(?:localhost|local|internal|intranet|lan|home|corp|arpa|invalid|test|example|onion)$/.test(host)) return null;
+  return url;
+}
+function cacheLifetime(header: string | null): number {
+  const value = (header ?? "").toLowerCase();
+  if (/(?:^|,)\s*(?:no-store|no-cache|private)\s*(?:,|$)/.test(value)) return 0;
+  const maxAge = /(?:^|,)\s*max-age=(\d{1,10})\s*(?:,|$)/.exec(value)?.[1];
+  return maxAge === undefined ? METADATA_DEFAULT_TTL : Math.min(DAY,Number(maxAge) * 1000);
+}
+/** Fetches and validates the document. Errors are never cached. */
+async function fetchClientMetadata(url: URL, now: number): Promise<{name:string;redirectUris:string[];expiresAt:number}> {
+  const unusable = (): never => fail(400,"invalid_client","This app’s client metadata could not be verified. Try connecting again later.");
+  let response: Response;
+  try {
+    response = await fetch(url.href,{redirect:"manual",signal:AbortSignal.timeout(5_000),headers:{Accept:"application/json"}});
+  } catch { return unusable(); }
+  const type = (response.headers.get("Content-Type") ?? "").split(";",1)[0].trim().toLowerCase();
+  if (response.status !== 200 || (type && type !== "application/json" && !/^application\/[a-z0-9.+-]+\+json$/.test(type))) {
+    await response.body?.cancel();
+    return unusable();
+  }
+  const text = await readLimited(response.body,METADATA_MAX_BYTES);
+  let doc: Record<string,unknown>;
+  try { doc = JSON.parse(text ?? ""); } catch { return unusable(); }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc) || doc.client_id !== url.href) return unusable();
+  // Public clients only: shared secrets are forbidden in metadata documents.
+  if ("client_secret" in doc || "client_secret_expires_at" in doc) return unusable();
+  const methods = doc.token_endpoint_auth_methods_supported;
+  const publicClient = methods !== undefined ? Array.isArray(methods) && methods.includes("none") : doc.token_endpoint_auth_method === "none";
+  if (!publicClient) fail(400,"invalid_client_metadata","This server supports public clients with PKCE and token_endpoint_auth_method none.");
+  if (doc.grant_types !== undefined && (!Array.isArray(doc.grant_types) || !doc.grant_types.includes("authorization_code") || !doc.grant_types.every((g) => ["authorization_code","refresh_token"].includes(g)))) return unusable();
+  if (doc.response_types !== undefined && (!Array.isArray(doc.response_types) || doc.response_types.some((r) => r !== "code"))) return unusable();
+  const redirects = doc.redirect_uris;
+  // Non-loopback callbacks stay on the origin that published the document.
+  if (!Array.isArray(redirects) || redirects.length < 1 || redirects.length > 10 || !redirects.every((r) => validRedirect(r) && (new URL(r).origin === url.origin || (new URL(r).protocol === "http:" && localHost(new URL(r).hostname))))) return unusable();
+  const name = typeof doc.client_name === "string" && doc.client_name.trim() ? doc.client_name.trim().slice(0,100) : url.hostname;
+  return {name,redirectUris:[...new Set(redirects as string[])],expiresAt:now + cacheLifetime(response.headers.get("Cache-Control"))};
+}
+async function metadataClient(request: Request, env: AuthEnv, url: URL): Promise<Client> {
+  const now = Date.now();
+  const cached = await env.DB.prepare(`SELECT * FROM oauth_clients WHERE id=? AND metadata_expires_at IS NOT NULL`).bind(url.href).first<Client>();
+  if (cached && cached.metadata_expires_at! > now) return cached;
+  // Only an uncached document costs an outbound request.
+  await throttle(request,env,"client_metadata",30);
+  await assertAnonymousResourceOperation(env,now);
+  const metadata = await fetchClientMetadata(url,now);
+  // Refreshing a known application never needs capacity; a new one shares a
+  // small lane that unrelated registrations cannot exhaust.
+  const written = await env.DB.prepare(`INSERT INTO oauth_clients(id,name,redirect_uris,created_at,metadata_expires_at)
+    SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM oauth_clients WHERE id=?1 AND metadata_expires_at IS NOT NULL)
+      OR (SELECT COUNT(*) FROM oauth_clients c WHERE c.metadata_expires_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oauth_grants g WHERE g.client_id=c.id))<?6
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,redirect_uris=excluded.redirect_uris,metadata_expires_at=excluded.metadata_expires_at
+      WHERE oauth_clients.metadata_expires_at IS NOT NULL`).bind(url.href,metadata.name,JSON.stringify(metadata.redirectUris),now,metadata.expiresAt,UNCLAIMED_METADATA_CLIENTS).run();
+  if (!written.meta.changes) fail(429,"client_capacity","Client registration is temporarily at capacity.");
+  return {id:url.href,name:metadata.name,redirect_uris:JSON.stringify(metadata.redirectUris),metadata_expires_at:metadata.expiresAt};
+}
+function registeredRedirect(client: Client, redirectUri: string): boolean {
+  const registered = JSON.parse(client.redirect_uris) as string[];
+  if (registered.includes(redirectUri)) return true;
+  // RFC 8252 §7.3: a native app's loopback port is chosen at run time. Only
+  // metadata documents, which cannot list that port, use this exception.
+  const requested = new URL(redirectUri);
+  if (client.metadata_expires_at == null || requested.href !== redirectUri || requested.protocol !== "http:" || !localHost(requested.hostname)) return false;
+  return registered.some((value) => {
+    const candidate = new URL(value);
+    if (candidate.protocol !== "http:" || candidate.hostname !== requested.hostname) return false;
+    candidate.port = requested.port;
+    return candidate.href === requested.href;
+  });
+}
+async function oauthClient(request: Request, env: AuthEnv, clientId: string): Promise<Client | null> {
+  if (clientId.length > CLIENT_ID_MAX) return null;
+  const url = metadataClientUrl(clientId);
+  // The relay never fetches a document from itself.
+  if (url && url.hostname !== new URL(request.url).hostname) return metadataClient(request,env,url);
+  if (clientId.startsWith("https://")) return null;
+  return env.DB.prepare(`SELECT * FROM oauth_clients WHERE id=? AND metadata_expires_at IS NULL`).bind(clientId).first<Client>();
+}
+const metadataClientHost = (client: Client): string | null => client.metadata_expires_at == null ? null : new URL(client.id).hostname;
+
+/** A pre-filled suggestion for a new connection. Client names are
+ * self-asserted, so this never selects or authorizes an existing connection. */
+export function suggestedPlatform(clientName: string): PlatformId | null {
+  const name = clientName.toLowerCase();
+  if (/claude[\s_-]*code/.test(name)) return "claude-code";
+  if (/claude|anthropic/.test(name)) return "claude";
+  if (/codex/.test(name)) return "codex";
+  if (/chatgpt|openai/.test(name)) return "chatgpt";
+  if (/grok|\bxai\b/.test(name)) return "grok";
+  return null;
+}
+/** OAuth clients connect over MCP; routine platforms pair separately. */
+const consentPlatforms = () => PLATFORMS.filter((p) => p.connects === "mcp").map((p) => ({id:p.id,label:p.label,can_request:p.defaults.can_request,can_work:p.defaults.can_work}));
 function parseScope(value: string | null): string[] {
   const scopes = value == null || value === "" ? ALL_SCOPES : [...new Set(value.split(/\s+/).filter(Boolean))];
   if (scopes.some((s) => !ALL_SCOPES.includes(s))) fail(400,"invalid_scope","The requested permission is not supported.");
@@ -428,9 +552,11 @@ async function authorizationRequest(request: Request, env: AuthEnv): Promise<{cl
   const url = new URL(request.url), p = url.searchParams, base = origin(request,env);
   for (const key of p.keys()) if (p.getAll(key).length !== 1) fail(400,"invalid_request","Duplicate parameters are not allowed.");
   const clientId = p.get("client_id") ?? "", redirectUri = p.get("redirect_uri") ?? "";
-  if (clientId.length > 200) fail(400,"invalid_client","Unknown client.");
-  const client = await env.DB.prepare(`SELECT * FROM oauth_clients WHERE id=?`).bind(clientId).first<Client>();
-  if (!client || !validRedirect(redirectUri) || !(JSON.parse(client.redirect_uris) as string[]).includes(redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
+  if (clientId.length > CLIENT_ID_MAX) fail(400,"invalid_client","Unknown client.");
+  // Reject malformed callbacks before any metadata document is fetched.
+  if (!validRedirect(redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
+  const client = await oauthClient(request,env,clientId);
+  if (!client || !registeredRedirect(client,redirectUri)) fail(400,"invalid_client","The client or exact redirect URI is not registered.");
   if (p.get("response_type") !== "code") fail(400,"unsupported_response_type","Use the authorization-code flow.");
   const pkce = p.get("code_challenge") ?? "";
   if (p.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(pkce)) fail(400,"invalid_request","S256 PKCE is required.");
@@ -468,7 +594,7 @@ async function authorizeGet(request: Request, env: AuthEnv): Promise<Response> {
   // and provider labels are not identity evidence. Missing resource stays on
   // the compatible generic flow with an explicit owner choice.
   const targetAgentId = resourceConnectionId(data.resource,origin(request,env)) ?? null;
-  const agents = await env.DB.prepare(`SELECT id,name,can_request,can_work FROM agents WHERE workspace_id=?1 AND (?2 IS NULL OR id=?2) ORDER BY name`).bind(session.workspaceId,targetAgentId).all<{id:string;name:string;can_request:number;can_work:number}>();
+  const agents = await env.DB.prepare(`SELECT id,handle,name,can_request,can_work FROM agents WHERE workspace_id=?1 AND (?2 IS NULL OR id=?2) ORDER BY name`).bind(session.workspaceId,targetAgentId).all<{id:string;handle:string;name:string;can_request:number;can_work:number}>();
   if (targetAgentId && !agents.results.length) fail(403,"access_denied","This connection is unavailable in your workspace. Return to its setup page and sign in to the correct account.");
   const requestId = randomToken("consent_",32);
   const inserted=await env.DB.prepare(`INSERT INTO oauth_requests(id_hash,session_hash,payload,expires_at)
@@ -478,7 +604,11 @@ async function authorizeGet(request: Request, env: AuthEnv): Promise<Response> {
       WHERE s.token_hash=?2 AND w.security_suspended=0 AND w.identity_restricted=0)`).bind(await sha256(requestId),session.sessionHash,JSON.stringify(data),Date.now() + 10 * 60_000).run();
   if (!inserted.meta.changes) fail(429,"consent_capacity","Too many pending connections. Try again later.");
   const redirectOrigin = new URL(data.redirectUri).origin;
-  const consent={clientName:client.name,redirectOrigin,email:session.email,csrfToken:session.csrfToken,requestId,scopes:data.scope.split(" "),agents:agents.results,targetAgentId};
+  // The generic flow can create its connection in place through the owner's
+  // existing connection API. The suggestion only pre-fills that form.
+  const creation = targetAgentId ? {} : {platforms:consentPlatforms(),suggestedPlatform:suggestedPlatform(client.name)};
+  const consent={clientName:client.name,clientHost:metadataClientHost(client),redirectOrigin,email:session.email,csrfToken:session.csrfToken,requestId,scopes:data.scope.split(" "),agents:agents.results,targetAgentId,...creation,
+  };
   if(asJson) return json(consent);
   const clerk=authProvider(env)==="clerk" ? clerkUi(env,returnTo) : undefined;
   return html(consentPage({...consent,clerk}),200,redirectOrigin,clerk);
@@ -503,7 +633,8 @@ async function authorizePost(request: Request, env: AuthEnv): Promise<Response> 
   if (!row) fail(400,"invalid_request","This consent request expired or was already used.");
   const data = JSON.parse(row.payload) as AuthRequest;
   if (body.get("decision") === "deny") {
-    await env.DB.prepare(`DELETE FROM oauth_requests WHERE id_hash=? AND session_hash=?`).bind(await sha256(id),session.sessionHash).run();
+    await env.DB.prepare(`DELETE FROM oauth_requests WHERE id_hash=? AND session_hash=?`).bind(await sha256(id),session.sessionHash).run()
+      ;
     return returnToClient(data,base,{error:"access_denied"},split && wantsJson(request));
   }
   if (body.get("decision") !== "allow") fail(400,"invalid_request","Choose whether to connect this client.");
@@ -525,6 +656,9 @@ async function authorizePost(request: Request, env: AuthEnv): Promise<Response> 
         AND NOT EXISTS(SELECT 1 FROM account_deletions WHERE user_id=?2)`).bind(grantId,session.userId,session.workspaceId,agent.id,agent.auth_generation,data.clientId,scopes.join(" "),data.resource,now),
     env.DB.prepare(`INSERT INTO oauth_codes(code_hash,grant_id,redirect_uri,code_challenge,expires_at)
       SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM oauth_grants WHERE id=?2)`).bind(await sha256(code),grantId,data.redirectUri,data.challenge,now + 60_000),
+    // An owner's first authorization moves the client out of the anonymous lane.
+    env.DB.prepare(`UPDATE oauth_clients SET claimed_at=?1 WHERE id=?2 AND claimed_at IS NULL
+      AND EXISTS(SELECT 1 FROM oauth_grants WHERE id=?3)`).bind(now,data.clientId,grantId),
   ]);
   if (!written[0].meta.changes) fail(429,"grant_capacity","This account cannot add another connection right now.");
   return returnToClient(data,base,{code},split && wantsJson(request));
@@ -580,7 +714,7 @@ async function issueTokens(env: AuthEnv, grant: Grant, agent: TenantAgent, sourc
 async function tokenEndpoint(request: Request, env: AuthEnv): Promise<Response> {
   await throttle(request,env,"token",120,60_000);
   const body = await formBody(request), clientId = body.get("client_id") ?? "", now = Date.now();
-  if (!clientId || clientId.length > 200 || request.headers.has("Authorization") || body.has("client_secret")) fail(400,"invalid_client","Use the registered public client_id and PKCE; client secrets are not supported.");
+  if (!clientId || clientId.length > CLIENT_ID_MAX || request.headers.has("Authorization") || body.has("client_secret")) fail(400,"invalid_client","Use the registered public client_id and PKCE; client secrets are not supported.");
   if (body.get("grant_type") === "authorization_code") {
     const code = body.get("code") ?? "", verifier = body.get("code_verifier") ?? "";
     if (code.length > 200 || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) fail(400,"invalid_grant","Invalid authorization code or verifier.");
@@ -641,7 +775,7 @@ export function oauthChallenge(request: Request, env: AuthEnv): string {
 async function revokeEndpoint(request: Request, env: AuthEnv): Promise<Response> {
   await throttle(request,env,"revoke",120,60_000);
   const body = await formBody(request), token = body.get("token") ?? "", clientId = body.get("client_id") ?? "";
-  if (token.length > 200 || !clientId || clientId.length > 200) fail(400,"invalid_request","Provide a token and registered client_id.");
+  if (token.length > 200 || !clientId || clientId.length > CLIENT_ID_MAX) fail(400,"invalid_request","Provide a token and registered client_id.");
   await env.DB.prepare(`UPDATE oauth_grants SET revoked_at=? WHERE client_id=? AND id IN (SELECT grant_id FROM oauth_tokens WHERE token_hash=?)`).bind(Date.now(),clientId,await sha256(token)).run();
   return json({});
 }
@@ -713,7 +847,7 @@ export async function handleAuth(request: Request, env: AuthEnv): Promise<Respon
       // Deliberately no lookup: discovery reveals neither names nor existence.
       return json({resource:base + resourcePath,authorization_servers:[base],scopes_supported:ALL_SCOPES,bearer_methods_supported:["header"]});
     }
-    if (request.method === "GET" && path === "/.well-known/oauth-authorization-server") return json({issuer:base,authorization_endpoint:base + "/oauth/authorize",token_endpoint:base + "/oauth/token",registration_endpoint:base + "/oauth/register",revocation_endpoint:base + "/oauth/revoke",response_types_supported:["code"],grant_types_supported:["authorization_code","refresh_token"],token_endpoint_auth_methods_supported:["none"],revocation_endpoint_auth_methods_supported:["none"],code_challenge_methods_supported:["S256"],scopes_supported:ALL_SCOPES,authorization_response_iss_parameter_supported:true});
+    if (request.method === "GET" && path === "/.well-known/oauth-authorization-server") return json({issuer:base,authorization_endpoint:base + "/oauth/authorize",token_endpoint:base + "/oauth/token",registration_endpoint:base + "/oauth/register",revocation_endpoint:base + "/oauth/revoke",response_types_supported:["code"],grant_types_supported:["authorization_code","refresh_token"],token_endpoint_auth_methods_supported:["none"],revocation_endpoint_auth_methods_supported:["none"],code_challenge_methods_supported:["S256"],scopes_supported:ALL_SCOPES,authorization_response_iss_parameter_supported:true,client_id_metadata_document_supported:true});
     if ((request.method === "GET" && path === "/auth/session") || (request.method==="POST" && path==="/auth/clerk/session" && authProvider(env)==="clerk")) {
       if(request.method==="POST" && request.headers.get("Origin")!==frontendOrigin) fail(403,"csrf_failed","This request must come from your relay workspace.");
       const session = await getHumanSession(request,env);
@@ -796,6 +930,9 @@ export async function cleanupAuth(env: AuthEnv, now = Date.now()): Promise<void>
     env.DB.prepare(`DELETE FROM auth_rate_limits WHERE expires_at<?`).bind(now),
     env.DB.prepare(`DELETE FROM identity_signup_cooldowns WHERE expires_at<=?`).bind(now),
     env.DB.prepare(`DELETE FROM oauth_clients WHERE created_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - 30 * DAY),
+    env.DB.prepare(`DELETE FROM oauth_clients WHERE claimed_at IS NULL AND metadata_expires_at IS NULL AND created_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - UNCLAIMED_RETENTION),
+    // A metadata row is a cache; an unreferenced one is fetched again on use.
+    env.DB.prepare(`DELETE FROM oauth_clients WHERE metadata_expires_at<? AND id NOT IN (SELECT client_id FROM oauth_grants)`).bind(now - DAY),
   ]);
   const pending=await env.DB.prepare(`SELECT user_id,workspace_id FROM account_deletions ORDER BY created_at LIMIT 3`).all<{user_id:string;workspace_id:string}>();
   for(const row of pending.results) { try { await finishHumanDeletion(env,row.user_id,row.workspace_id); } catch { /* durable marker retries next run */ } }

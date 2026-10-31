@@ -245,12 +245,14 @@ export async function checkConversationInbox(env: Env, agent: AgentRow, consumer
 async function acknowledgeConversationInternal(env: Env, agent: AgentRow, id: string, consumerId: string, cursor: number, now = Date.now()) {
   consumer(consumerId); await conversationRow(env, { owner: false, agent }, id);
   if (!Number.isSafeInteger(cursor) || cursor < 1 || !(await env.DB.prepare(`SELECT id FROM conversation_messages WHERE workspace_id=? AND conversation_id=? AND id=?`).bind(workspaceId(env), id, cursor).first())) throw new RelayError(400, 'invalid_cursor', 'Acknowledge an existing message cursor in this conversation.');
-  try { await env.DB.batch([
+  try { const written = await env.DB.batch<JobRow>([
     env.DB.prepare(`INSERT INTO conversation_receipts(workspace_id,conversation_id,agent_id,consumer_id,cursor,updated_at) VALUES(?,?,?,?,?,?)
       ON CONFLICT(workspace_id,conversation_id,agent_id,consumer_id) DO UPDATE SET cursor=excluded.cursor,updated_at=MAX(updated_at,excluded.updated_at)
       WHERE excluded.cursor>conversation_receipts.cursor`).bind(workspaceId(env), id, agent.id, consumerId, cursor, now),
-    env.DB.prepare(`UPDATE jobs SET retrieved_at=?1 WHERE workspace_id=?2 AND conversation_id=?3 AND from_agent=?4 AND retrieved_at IS NULL AND status IN ('completed','failed') AND EXISTS(SELECT 1 FROM conversation_messages m WHERE m.workspace_id=jobs.workspace_id AND m.request_id=jobs.id AND m.kind IN ('answer','failure') AND m.to_agent=?4 AND m.id<=?5 AND m.source_key=jobs.id||':result:'||jobs.attempts)`).bind(now, workspaceId(env), id, agent.id, cursor),
-  ]); } catch (error) {
+    env.DB.prepare(`UPDATE jobs SET retrieved_at=?1 WHERE workspace_id=?2 AND conversation_id=?3 AND from_agent=?4 AND retrieved_at IS NULL AND status IN ('completed','failed') AND EXISTS(SELECT 1 FROM conversation_messages m WHERE m.workspace_id=jobs.workspace_id AND m.request_id=jobs.id AND m.kind IN ('answer','failure') AND m.to_agent=?4 AND m.id<=?5 AND m.source_key=jobs.id||':result:'||jobs.attempts)
+      RETURNING id,spec,from_agent,to_agent,result_by,type,attempts,requires_consumer,created_at,status`).bind(now, workspaceId(env), id, agent.id, cursor),
+  ]);
+  } catch (error) {
     if (error instanceof Error && error.message.includes('consumer_limit'))
       throw new RelayError(429, 'consumer_limit', 'This connection already has eight delivery consumers. Reuse an existing stable consumer_id for this interactive or scheduled client instead of creating one for each execution.');
     throw error;

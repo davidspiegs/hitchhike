@@ -328,6 +328,11 @@ const releaseIdentifier = (value: unknown): string | null => {
   return /^[A-Za-z0-9._-]{1,64}$/.test(trimmed) ? trimmed : null;
 };
 app.get("/healthz", (c) => c.json({ ok: true, protocol: PROTOCOL_VERSION, release: releaseIdentifier(c.env.HITCHHIKE_RELEASE), version: c.env.CF_VERSION_METADATA?.id ?? null }));
+// The plugin portal fetches exactly the token, as plain text, from the MCP host.
+app.get("/.well-known/openai-apps-challenge", (c) => {
+  const token = c.env.OPENAI_APPS_CHALLENGE?.trim() ?? "";
+  return /^[\x21-\x7e]{1,512}$/.test(token) ? c.text(token, 200, { "Cache-Control": "no-store" }) : c.notFound();
+});
 app.get("/beta", (c) => {
   const hosted=isHosted(c.env),provider=hosted?authProvider(c.env):"google",configured=hosted&&loginConfigured(c.env);
   if(hosted){const origins=deploymentOrigins(c.env,new URL(c.req.url).origin);if(origins.split)return c.redirect(origins.frontendOrigin+"/app-next",303);}
@@ -771,7 +776,7 @@ app.delete("/v1/admin/workspace",async(c)=>{
   return c.json({ok:true});
 });
 
-export default {
+const worker: ExportedHandler<Env> = {
   fetch: app.fetch,
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil((async () => {
@@ -781,4 +786,5 @@ export default {
       await cleanupAuth(env);
     })());
   },
-} satisfies ExportedHandler<Env>;
+};
+export default worker;

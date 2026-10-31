@@ -546,20 +546,28 @@ try {
     assert.ok((await refreshed.json()).refresh_token);
   });
 
-  await check("global OAuth client capacity cannot grow past 1000 and aged metadata cleanup restores registration", async () => {
-    const now = Date.now(), before = get("SELECT COUNT(*) AS n FROM oauth_clients").n;
-    run("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?) INSERT INTO oauth_clients(id,name,redirect_uris,created_at) SELECT 'capacity-client-'||n,'Synthetic capacity client','[\"https://client.example.test/callback\"]',? FROM numbers", 1000 - before, now - 31 * 86400000);
-    assert.equal(get("SELECT COUNT(*) AS n FROM oauth_clients").n, 1000);
+  await check("anonymous OAuth registrations are bounded per day while authorized clients never consume that capacity", async () => {
+    const now = Date.now(), day = 86400000;
+    const unclaimed = () => get("SELECT COUNT(*) AS n FROM oauth_clients WHERE claimed_at IS NULL AND metadata_expires_at IS NULL AND created_at>?", now - day).n;
+    // Clients already authorized by owners: well past the former 1,000-row global cap.
+    run("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<3000) INSERT INTO oauth_clients(id,name,redirect_uris,created_at,claimed_at) SELECT 'claimed-client-'||n,'Synthetic claimed client','[\"https://client.example.test/callback\"]',?,? FROM numbers", now, now);
+    run("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?) INSERT INTO oauth_clients(id,name,redirect_uris,created_at) SELECT 'capacity-client-'||n,'Synthetic capacity client','[\"https://client.example.test/callback\"]',? FROM numbers", 2000 - unclaimed(), now);
+    const total = get("SELECT COUNT(*) AS n FROM oauth_clients").n;
     const denied = await handle(registration("192.0.2.51"));
     assert.equal(denied.status, 429);
     assert.equal((await denied.json()).error, "client_capacity");
-    assert.equal(get("SELECT COUNT(*) AS n FROM oauth_clients").n, 1000, "Registration cannot exceed the global client cap");
-    await auth.cleanupAuth(env, now);
-    assert.equal(get("SELECT COUNT(*) AS n FROM oauth_clients WHERE id LIKE 'capacity-client-%'").n, 0, "Old unused clients stop consuming metadata capacity");
+    assert.equal(get("SELECT COUNT(*) AS n FROM oauth_clients").n, total, "Anonymous registration cannot exceed its daily allowance");
+    // The allowance rolls: day-old abandoned registrations stop counting.
+    run("UPDATE oauth_clients SET created_at=? WHERE id LIKE 'capacity-client-%'", now - 2 * day);
     const registered = await handle(registration("192.0.2.52"));
     assert.equal(registered.status, 201);
     const data = await registered.json();
     assert.ok(get("SELECT 1 FROM oauth_clients WHERE id=?", data.client_id));
+    run("UPDATE oauth_clients SET created_at=? WHERE id LIKE 'capacity-client-%'", now - 8 * day);
+    await auth.cleanupAuth(env, now);
+    assert.equal(get("SELECT COUNT(*) AS n FROM oauth_clients WHERE id LIKE 'capacity-client-%'").n, 0, "Abandoned registrations are removed after a week");
+    assert.equal(get("SELECT COUNT(*) AS n FROM oauth_clients WHERE id LIKE 'claimed-client-%'").n, 3000, "Authorized clients keep their longer retention");
+    run("DELETE FROM oauth_clients WHERE id LIKE 'claimed-client-%'");
     await assertAllowed(unaffected);
   });
 

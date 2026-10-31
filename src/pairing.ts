@@ -66,11 +66,12 @@ export async function redeemPairing(env: Env, code: unknown, origin: string, now
       instructions: `${bootstrap}\n\n${prompt}`,
     };
   }
+  const instructions = setupText({agentId:agent.id,name:agent.name,token,relayUrl:origin,canWork:!!agent.can_work,
+    canRequest:!!agent.can_request,workTypes:parseJSON<string[]>(agent.work_types,[]),pollMinutes:agent.poll_minutes,hosted:true});
   return {
     agent: { id: agent.id, name: agent.name, can_request: !!agent.can_request, can_work: !!agent.can_work },
     token,
     relay_url: origin,
-    instructions: setupText({agentId:agent.id,name:agent.name,token,relayUrl:origin,canWork:!!agent.can_work,
-      canRequest:!!agent.can_request,workTypes:parseJSON<string[]>(agent.work_types,[]),pollMinutes:agent.poll_minutes,hosted:true}),
+    instructions,
   };
 }

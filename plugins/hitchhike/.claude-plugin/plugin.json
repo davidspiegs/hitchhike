@@ -1,0 +1,27 @@
+{
+  "name": "hitchhike",
+  "version": "0.1.0",
+  "description": "Let Claude Code send tasks, prompts and follow-ups to your other AI assistants (ChatGPT, Codex, Claude, Grok, Grok Bot, Muse) through Hitchhike, and pick up work they send back.",
+  "author": {
+    "name": "David Spiegel",
+    "url": "https://github.com/davidspiegs"
+  },
+  "homepage": "https://hitchhike.dev",
+  "repository": "https://github.com/davidspiegs/hitchhike",
+  "license": "MIT",
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://hitchhike.dev/docs/connect",
+  "supportUrl": "https://github.com/davidspiegs/hitchhike/issues",
+  "privacyPolicyUrl": "https://hitchhike.dev/privacy",
+  "termsOfServiceUrl": "https://hitchhike.dev/terms",
+  "keywords": [
+    "mcp",
+    "multi-agent",
+    "delegation",
+    "collaboration",
+    "relay",
+    "codex",
+    "chatgpt",
+    "grok"
+  ]
+}

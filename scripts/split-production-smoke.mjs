@@ -57,7 +57,7 @@ await check('content-hashed landing assets remain immutable', async () => {
   const paths = [...new Set([...home.text.matchAll(/(?:src|href)="(\/_hitchhike-assets\/[^"?#]+)"/g)].map(m => m[1]))];
   assert(paths.length >= 4, 'Missing content-hashed asset references');
   for (const path of paths) {
-    assert.match(path, /\.[a-f0-9]{16}\.(?:css|js|png|svg)$/);
+    assert.match(path, /\.[a-f0-9]{16}\.(?:css|js|png|svg|woff2)$/);
     const r = await fetch(frontend + path, { redirect: 'manual', signal: AbortSignal.timeout(15000) });
     assert.equal(r.status, 200);
     assert.match(r.headers.get('cache-control') || '', /max-age=31536000.*immutable/);

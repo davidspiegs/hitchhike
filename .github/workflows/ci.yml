@@ -39,6 +39,7 @@ jobs:
       - run: npm run test:onboarding-review
       - run: npm run test:hardening
       - run: npm run test:release-snapshot
+      - run: npm run test:marketplace
       - run: npm run test:local
         env:
           WRANGLER_SEND_METRICS: "false"

@@ -316,7 +316,6 @@ await check('landing and guide pages link to the repository and self-hosting gui
   assert.ok(header.includes(`<a class="nav-github" href="${repository}" rel="noopener noreferrer">GitHub</a>`));
   assert.ok(hero.includes(`<a class="button button-secondary" href="${repository}" rel="noopener noreferrer"><svg class="icon" aria-hidden="true"><use href="#github"/></svg>View on GitHub</a>`));
   assert.ok(landingHtml.includes('<symbol id="github" viewBox="0 0 16 16">'));
-  assert.ok(hero.includes('<p class="hero-aside">Free during beta. Open source under MIT. Bring your own AI accounts.</p>'));
   assert.ok(footer.includes(`<a href="${repository}" rel="noopener noreferrer">Source</a>`));
   assert.ok(footer.includes(`<a href="${repository}/blob/main/docs/self-hosting.md" rel="noopener noreferrer">Self-hosting</a>`));
   assert.ok(footer.includes('<p>Open source under MIT. Use Hitchhike hosted or run it in your own Cloudflare account.</p>'));
@@ -401,7 +400,11 @@ await check('landing hints allow only the public Clerk scripts without auth API 
   assert.doesNotMatch(landingHtml, /<script[^>]+src="https:\/\/clerk\.|AgentConnectAuth|pk_(live|test)_/);
   const policy = output.routes.find((route) => route.dest === '/index.html').headers['Content-Security-Policy'];
   const directives = Object.fromEntries(policy.split('; ').map((directive) => { const [name, ...sources] = directive.split(' '); return [name, sources.filter(Boolean)]; }));
-  assert.deepEqual(directives['script-src'], ["'self'", ...clerkBundles]);
+  const landingHashes = inline(landingHtml).map((script) => "'sha256-" + createHash('sha256').update(script).digest('base64') + "'");
+  assert.deepEqual(directives['script-src'], ["'self'", ...landingHashes, ...clerkBundles]);
+  for (const page of [landingHtml, ...Object.values(html), ...Object.values(docsHtml)]) {
+    assert.doesNotMatch(page, /<script[^>]+src="\/_vercel\/insights\//);
+  }
   assert.deepEqual(directives['connect-src'], ["'self'"]);
   assert.deepEqual(directives['frame-src'], ["'none'"]);
   assert.deepEqual(directives['img-src'], ["'self'", 'data:']);
@@ -618,13 +621,147 @@ await check('unauthenticated consent returns through sanitized sign-in without c
   assert.equal(b.calls.find((call) => call[0] === 'replace')[1], '/sign-in?return_to=' + encodeURIComponent('/connect?client_id=fixture&state=kept'));
 });
 
-await check('no-agent consent keeps cancellation and guides user to workspace', async () => {
+await check('no-agent consent from an API without in-place creation keeps cancellation and guides user to workspace', async () => {
   const b = consentBrowser({ response: async () => ({ ok: true, status: 200, json: async () => ({ ...consent, agents: [] }) }) });
   await settle();
   assert.equal(b.node('consent-allow').hidden, true);
   assert.equal(b.node('agent-id').disabled, true);
   assert.equal(b.node('no-agents').hidden, false);
   assert.equal(b.buttons[1].disabled, false);
+});
+
+const platforms = [
+  { id: 'dot', label: 'Dots (OpenAI)', can_request: true, can_work: true },
+  { id: 'claude', label: 'Claude', can_request: true, can_work: true },
+  { id: 'claude-code', label: 'Claude Code', can_request: true, can_work: false },
+];
+const firstConsent = { ...consent, clientName: 'Claude', clientHost: 'claude.ai', agents: [], targetAgentId: null, platforms, suggestedPlatform: 'claude-code', scopes: ['relay:read', 'relay:send', 'relay:work', 'offline_access'] };
+const created = { agent: { id: 'ag_01FIXTURE', handle: 'claude-code', name: 'Claude Code', can_request: true, can_work: false } };
+function creationBrowser(payload = firstConsent, { authorize = async () => ({ ok: true, status: 200, json: async () => ({ redirectUrl: 'https://client.example/callback?code=fixture' }) }) } = {}) {
+  return consentBrowser({ response: async (url, opts) => {
+    if (opts.method === 'GET') return { ok: true, status: 200, json: async () => structuredClone(payload) };
+    if (url.endsWith('/v1/admin/agents')) return { ok: true, status: 201, json: async () => created };
+    return authorize(url, opts);
+  } });
+}
+const scopeText = (b) => b.node('scope-list').children.map((item) => item.textContent);
+
+await check('first-time consent creates a suggested connection in place, then authorizes it in one pass', async () => {
+  const b = creationBrowser();
+  await settle();
+  assert.equal(b.node('agent-picker').hidden, true);
+  assert.equal(b.node('no-agents').hidden, true);
+  assert.equal(b.node('new-connection').hidden, false);
+  assert.equal(b.node('new-platform').value, 'claude-code', 'The client name only pre-fills the platform');
+  assert.equal(b.node('new-name').value, 'Claude Code');
+  assert.equal(b.node('new-can-request').checked, true);
+  assert.equal(b.node('new-can-work').checked, false, 'Permissions start from the platform defaults');
+  assert.equal(b.node('consent-allow').hidden, false);
+  assert.equal(b.node('consent-allow').disabled, false);
+  assert.equal(b.node('consent-allow').textContent, 'Create and connect');
+  assert.equal(b.node('client-host').textContent, 'claude.ai');
+  assert.equal(b.node('client-host-row').hidden, false);
+  assert.ok(!scopeText(b).includes('Pick up requests and send results back'), 'Listed permissions follow the connection role');
+  b.node('new-can-work').checked = true;
+  b.node('new-can-work').listeners.change();
+  assert.ok(scopeText(b).includes('Pick up requests and send results back'));
+  b.node('new-can-work').checked = false;
+  b.node('new-can-work').listeners.change();
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  const fetches = b.calls.filter((call) => call[0] === 'fetch');
+  assert.equal(fetches.length, 3);
+  const [, createUrl, createRequest] = fetches[1];
+  assert.equal(createUrl, 'https://api.example.test/v1/admin/agents');
+  assert.equal(createRequest.method, 'POST'); assert.equal(createRequest.credentials, 'omit'); assert.equal(createRequest.redirect, 'error');
+  assert.equal(createRequest.headers['Content-Type'], 'application/json');
+  assert.equal(createRequest.headers['X-CSRF-Token'], 'fixture-csrf');
+  assert.equal(createRequest.headers.Authorization, 'Bearer fixture-session-token');
+  assert.deepEqual(JSON.parse(createRequest.body), { id: 'claude-code', name: 'Claude Code', platform: 'claude-code', can_request: true, can_work: false });
+  const [, authorizeUrl, authorizeRequest] = fetches[2];
+  assert.equal(authorizeUrl, 'https://api.example.test/oauth/authorize');
+  assert.equal(authorizeRequest.body.get('agent_id'), 'ag_01FIXTURE');
+  assert.equal(authorizeRequest.body.get('request_id'), 'fixture-request');
+  assert.equal(authorizeRequest.body.get('csrf_token'), 'fixture-csrf');
+  assert.equal(authorizeRequest.body.get('decision'), 'allow');
+  assert.equal(b.calls.find((call) => call[0] === 'assign')[1], 'https://client.example/callback?code=fixture');
+});
+
+await check('an unrecognized app gets an explicit assistant choice; edits override defaults and keep the owner name', async () => {
+  const b = creationBrowser({ ...firstConsent, suggestedPlatform: null });
+  await settle();
+  assert.equal(b.node('new-platform').value, '', 'An unknown client is never mapped to a guessed platform');
+  assert.equal(b.node('new-platform').children[0].textContent, 'Choose an assistant…');
+  assert.equal(b.node('new-name').value, '');
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  assert.match(b.node('auth-error').textContent, /Choose which assistant/);
+  assert.equal(b.node('new-platform').focused, true);
+  assert.equal(b.calls.filter((call) => call[0] === 'fetch').length, 1);
+  b.node('new-name').value = 'Research desk';
+  b.node('new-name').listeners.input();
+  b.node('new-platform').value = 'claude';
+  b.node('new-platform').listeners.change();
+  assert.equal(b.node('new-name').value, 'Research desk');
+  assert.equal(b.node('new-can-work').checked, true);
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  const body = JSON.parse(b.calls.filter((call) => call[0] === 'fetch')[1][2].body);
+  assert.deepEqual(body, { id: 'research-desk', name: 'Research desk', platform: 'claude', can_request: true, can_work: true });
+});
+
+await check('first-time consent validates the new connection before any request', async () => {
+  const b = creationBrowser();
+  await settle();
+  b.node('new-name').value = '  ';
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  assert.match(b.node('auth-error').textContent, /Give this connection a name/);
+  assert.equal(b.node('new-name').focused, true);
+  b.node('new-name').value = 'Claude Code';
+  b.node('new-can-request').checked = false;
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  assert.match(b.node('auth-error').textContent, /send tasks, receive tasks, or both/);
+  assert.equal(b.calls.filter((call) => call[0] === 'fetch').length, 1);
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'deny' } });
+  assert.equal(b.calls.filter((call) => call[0] === 'fetch').at(-1)[2].body.get('decision'), 'deny');
+  assert.equal(b.calls.filter((call) => call[0] === 'fetch').some((call) => call[1].endsWith('/v1/admin/agents')), false, 'Cancel never creates a connection');
+});
+
+await check('a failed authorization after creation retries with the saved connection instead of a copy', async () => {
+  let attempts = 0;
+  const b = creationBrowser(firstConsent, { authorize: async () => (++attempts === 1
+    ? { ok: false, status: 503, json: async () => ({ error: { code: 'temporarily_unavailable', message: 'Try again shortly.' } }) }
+    : { ok: true, status: 200, json: async () => ({ redirectUrl: 'https://client.example/callback?code=fixture' }) }) });
+  await settle();
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  assert.match(b.node('auth-error').textContent, /Try again shortly/);
+  assert.equal(b.node('new-connection').hidden, true);
+  assert.equal(b.node('agent-picker').hidden, false);
+  assert.equal(b.node('agent-id').value, 'ag_01FIXTURE');
+  assert.equal(b.node('consent-allow').textContent, 'Connect Claude Code');
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  const creates = b.calls.filter((call) => call[0] === 'fetch' && call[1].endsWith('/v1/admin/agents'));
+  assert.equal(creates.length, 1);
+  assert.equal(b.calls.filter((call) => call[0] === 'fetch').at(-1)[2].body.get('agent_id'), 'ag_01FIXTURE');
+  assert.ok(b.calls.some((call) => call[0] === 'assign'));
+});
+
+await check('existing connections stay an explicit choice with creation as a separate option', async () => {
+  const withAgents = { ...firstConsent, agents: [{ id: 'ag_claude', handle: 'claude-code', name: 'Claude Code', can_request: 1, can_work: 0 }] };
+  const b = creationBrowser(withAgents);
+  await settle();
+  assert.equal(b.node('agent-picker').hidden, false);
+  assert.equal(b.node('new-connection').hidden, true);
+  assert.equal(b.node('agent-id').value, '', 'No connection is preselected from the client name');
+  assert.equal(b.node('agent-id').children.at(-1).value, '+new');
+  assert.equal(b.node('new-name').value, 'Claude Code 2');
+  b.node('agent-id').value = '+new';
+  b.node('agent-id').listeners.change();
+  assert.equal(b.node('new-connection').hidden, false);
+  assert.equal(b.node('consent-allow').textContent, 'Create and connect');
+  await b.node('oauth-consent').listeners.submit({ preventDefault() {}, submitter: { value: 'allow' } });
+  assert.equal(JSON.parse(b.calls.filter((call) => call[0] === 'fetch')[1][2].body).id, 'claude-code-2');
+  const fixed = consentBrowser({ response: async () => ({ ok: true, status: 200, json: async () => ({ ...consent, platforms, targetAgentId: 'grok-fixture', agents: [{ id: 'grok-fixture', name: 'Grok', can_request: 1, can_work: 1 }] }) }) });
+  await settle();
+  assert.equal(fixed.node('new-connection').hidden, true, 'A fixed connection never offers creation, even if the API lists platforms');
+  assert.ok(fixed.node('agent-id').children.every((option) => option.value !== '+new'));
 });
 
 await check('unexpected callback origin is blocked and consent controls recover', async () => {

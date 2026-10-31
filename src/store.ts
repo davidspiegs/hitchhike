@@ -46,6 +46,8 @@ export interface Env extends importBudgetEnvironment {
   PUBLIC_URL?: string;
   /** Operator-supplied git commit SHA or tag passed at deploy time; reported by /healthz. */
   HITCHHIKE_RELEASE?: string;
+  /** Token from OpenAI's plugin portal, served at /.well-known/openai-apps-challenge to verify this domain. */
+  OPENAI_APPS_CHALLENGE?: string;
   /** Cloudflare `version_metadata` binding; absent in local tests. */
   CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
@@ -365,7 +367,7 @@ export async function sweep(env: Env, now = Date.now(), limit = 100): Promise<Jo
     INSERT INTO events (workspace_id,ts,job_id,actor,kind,detail)
     SELECT workspace_id,?1,id,'relay',?4,?5 FROM audit_candidates WHERE EXISTS(SELECT 1 FROM audit_admission)`)
     .bind(now, workspaceId(env), batchSize, kind, detail);
-  const [, requeued] = await db.batch<JobRow>([
+  const [, requeued, , exhaustedJobs, , expiredJobs] = await db.batch<JobRow>([
     audit(requeue, 'lease_expired', '{"requeued":true}'),
     db
       .prepare(
@@ -380,7 +382,7 @@ export async function sweep(env: Env, now = Date.now(), limit = 100): Promise<Jo
         `UPDATE jobs SET status='failed', lease_holder=NULL, lease_expires_at=NULL,lease_id=NULL, updated_at=?1, completed_at=?1,
                 error='No worker finished before its lease ran out (' || (attempts-clarification_rounds) || ' work attempts).'
           WHERE workspace_id=?2 AND ${exhausted}
-        RETURNING id`,
+        RETURNING id,spec,from_agent,to_agent,result_by,type,attempts,requires_consumer,created_at`,
       )
       .bind(now, workspaceId(env), batchSize),
     audit(expired, 'expired', null),
@@ -388,7 +390,7 @@ export async function sweep(env: Env, now = Date.now(), limit = 100): Promise<Jo
       .prepare(
         `UPDATE jobs SET status='expired', lease_holder=NULL, lease_expires_at=NULL,lease_id=NULL, updated_at=?1, completed_at=?1
           WHERE workspace_id=?2 AND ${expired}
-        RETURNING id`,
+        RETURNING id,spec,from_agent,to_agent,result_by,type,attempts,requires_consumer,created_at`,
       )
       .bind(now, workspaceId(env), batchSize),
   ]);
@@ -1098,10 +1100,17 @@ async function transitionInternal(env: Env, actor: Actor, id: string, action: Tr
     if (actor.owner && job.from_agent === "owner") {
       // The website is the originating consumer for owner-requested work. An
       // owner accepting an assistant's request must not impersonate its retrieval.
-      row = await db.prepare(`UPDATE jobs SET retrieved_at=COALESCE(retrieved_at,?1)
+      row = await db.prepare(`UPDATE jobs SET retrieved_at=?1
         WHERE workspace_id=?2 AND id=?3 AND from_agent='owner' AND status='completed' AND attempts=?4
+          AND retrieved_at IS NULL
           AND EXISTS(SELECT 1 FROM workspaces w WHERE w.id=jobs.workspace_id AND w.security_suspended=0 AND w.identity_restricted=0)
         RETURNING *`).bind(now, workspaceId(env), id, job.attempts).first<JobRow>();
+      // Repeated acknowledgements are successful reads, without another write.
+      if (!row) row = await db.prepare(`SELECT * FROM jobs
+        WHERE workspace_id=?1 AND id=?2 AND from_agent='owner' AND status='completed' AND attempts=?3
+          AND retrieved_at IS NOT NULL
+          AND EXISTS(SELECT 1 FROM workspaces w WHERE w.id=jobs.workspace_id AND w.security_suspended=0 AND w.identity_restricted=0)`)
+        .bind(workspaceId(env), id, job.attempts).first<JobRow>();
       if (!row) conflict("The job changed while you were acting on it. Fetch it again.");
     }
     // A receipt is idempotent per completed attempt. At full storage the result
@@ -1330,11 +1339,13 @@ export async function acknowledgeInbox(env: Env, agent: AgentRow, cursor: number
     .bind(cursor, workspaceId(env), agent.id, agent.auth_generation).first<{ inbox_cursor: number }>();
   if (!updated) bad("Acknowledge only a cursor previously returned by this connection's inbox.");
   agent.inbox_cursor = updated.inbox_cursor;
-  await env.DB.prepare(`UPDATE jobs SET retrieved_at=COALESCE(retrieved_at,?1)
-    WHERE workspace_id=?2 AND from_agent=?3 AND status='completed'
+  const now = Date.now();
+  const retrieved = await env.DB.prepare(`UPDATE jobs SET retrieved_at=?1
+    WHERE workspace_id=?2 AND from_agent=?3 AND status='completed' AND retrieved_at IS NULL
       AND EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=?2 AND e.job_id=jobs.id AND e.kind='completed' AND e.id<=?4
-        AND e.id=(SELECT MAX(latest.id) FROM events latest WHERE latest.workspace_id=?2 AND latest.job_id=jobs.id AND latest.kind='completed'))`)
-    .bind(Date.now(), workspaceId(env), agent.id, updated.inbox_cursor).run();
+        AND e.id=(SELECT MAX(latest.id) FROM events latest WHERE latest.workspace_id=?2 AND latest.job_id=jobs.id AND latest.kind='completed'))
+    RETURNING id,spec,from_agent,to_agent,result_by,type,attempts,requires_consumer,created_at,status`)
+    .bind(now, workspaceId(env), agent.id, updated.inbox_cursor).all<JobRow>();
 }
 
 export async function listAgents(env: Env, now: number) {

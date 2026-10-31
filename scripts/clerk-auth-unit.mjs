@@ -483,6 +483,7 @@ try {
     const consent = await response.json();
     assert.equal(consent.targetAgentId, "split-grok");
     assert.deepEqual(consent.agents.map(agent => agent.id), ["split-grok"]);
+    assert.equal(consent.platforms, undefined, "A fixed connection never offers to create another");
     const approval = { request_id: consent.requestId, csrf_token: consent.csrfToken, decision: "allow" };
     assert.equal((await handle(request("/oauth/authorize", form({ ...approval, agent_id: "split-other" }, headers)), settings)).status, 403);
     assert.equal((await handle(request("/oauth/authorize", form({ ...approval, agent_id: agentId }, headers)), settings)).status, 403);
@@ -503,6 +504,49 @@ try {
     const genericConsent = await generic.json();
     assert.equal(genericConsent.targetAgentId, null);
     assert.deepEqual(genericConsent.agents.map(agent => agent.id).sort(), ["split-grok", "split-other"], "Providers omitting resource keep the explicit owner choice");
+  });
+  await check("a brand-new owner creates a connection from generic consent and finishes OAuth in one pass", async () => {
+    const frontend = "https://app.example.test", settings = { ...env, FRONTEND_URL: frontend };
+    const signed = await session(fixture("split_first"), { claims: { azp: frontend }, settings });
+    const headers = { authorization: `Bearer ${signed.token}`, origin: frontend, accept: "application/json" };
+    const registered = await handle(request("/oauth/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_name: "Claude", redirect_uris: [redirectUri], token_endpoint_auth_method: "none" }) }), settings);
+    assert.equal(registered.status, 201);
+    const directoryClient = (await registered.json()).client_id;
+    const query = new URLSearchParams({ client_id: directoryClient, redirect_uri: redirectUri, response_type: "code", code_challenge: challenge, code_challenge_method: "S256", scope: "relay:read relay:send relay:work offline_access", state: "directory-state" });
+    const loaded = await handle(request("/oauth/authorize?" + query, { headers }), settings);
+    assert.equal(loaded.status, 200);
+    const consent = await loaded.json();
+    assert.deepEqual(consent.agents, []);
+    assert.equal(consent.targetAgentId, null);
+    assert.equal(consent.suggestedPlatform, "claude", "The client name pre-fills a suggestion");
+    assert.deepEqual(consent.platforms.map(platform => platform.id).sort(), ["chatgpt", "claude", "claude-code", "codex", "dot", "grok"], "OAuth consent offers only MCP platforms");
+    assert.deepEqual(consent.platforms.find(platform => platform.id === "claude-code"), { id: "claude-code", label: "Claude Code", can_request: true, can_work: false });
+    // The page creates the connection through the workspace's own API.
+    const create = (extra = {}, body = { id: "claude", name: "Claude", platform: "claude", can_request: true, can_work: true }) => route(request("/v1/admin/agents", { method: "POST", headers: { ...headers, "content-type": "application/json", ...extra }, body: JSON.stringify(body) }), settings);
+    assert.equal((await create()).status, 403, "Connection creation keeps its CSRF check");
+    assert.equal((await create({ "x-csrf-token": "forged" })).status, 403);
+    assert.equal(count("agents WHERE workspace_id='" + signed.workspace.id + "'"), 0);
+    const created = await create({ "x-csrf-token": consent.csrfToken });
+    assert.equal(created.status, 201);
+    const out = await created.json();
+    assert.match(out.agent.id, /^ag_/);
+    assert.equal(out.agent.platform, "claude");
+    assert.equal(out.token, undefined, "Hosted creation never returns a static key to the browser");
+    const approval = { request_id: consent.requestId, csrf_token: consent.csrfToken, decision: "allow", agent_id: out.agent.id };
+    assert.equal((await handle(request("/oauth/authorize", form({ ...approval, csrf_token: "forged" }, headers)), settings)).status, 403);
+    const approved = await handle(request("/oauth/authorize", form(approval, headers)), settings);
+    assert.equal(approved.status, 200);
+    const callback = new URL((await approved.json()).redirectUrl);
+    assert.equal(callback.searchParams.get("state"), "directory-state");
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM oauth_requests WHERE id_hash=?").get(createHash("sha256").update(consent.requestId).digest("hex")).n, 0, "The consent request is consumed");
+    const exchanged = await handle(request("/oauth/token", form({ grant_type: "authorization_code", client_id: directoryClient, redirect_uri: redirectUri, code: callback.searchParams.get("code"), code_verifier: verifier, resource: base + "/mcp" })), settings);
+    assert.equal(exchanged.status, 200);
+    const tokens = await exchanged.json();
+    assert.deepEqual(tokens.scope.split(" ").sort(), ["offline_access", "relay:read", "relay:send", "relay:work"]);
+    const actor = await auth.authenticateOAuth(request("/mcp", { headers: { authorization: `Bearer ${tokens.access_token}` } }), settings);
+    assert.equal(actor.agent.id, out.agent.id);
+    assert.equal(actor.workspaceId, signed.workspace.id);
+    assert.ok(sqlite.prepare("SELECT claimed_at FROM oauth_clients WHERE id=?").get(directoryClient).claimed_at, "Authorization moves the client out of the anonymous registration lane");
   });
   await check("Clerk transport parameters never enter consent links or saved login returns", async () => {
     const clean=authorizePath(), marker="transport-secret-placeholder";

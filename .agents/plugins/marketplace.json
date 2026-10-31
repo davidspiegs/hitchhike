@@ -1,0 +1,20 @@
+{
+  "name": "hitchhike",
+  "interface": {
+    "displayName": "Hitchhike"
+  },
+  "plugins": [
+    {
+      "name": "hitchhike",
+      "source": {
+        "source": "local",
+        "path": "./plugins/hitchhike"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

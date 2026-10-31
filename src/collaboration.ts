@@ -293,9 +293,10 @@ export async function updateOnboardingProgress(env: CollaborationEnv, actor: Act
   if (!STEPS.has(step)) bad("Choose a valid setup step.");
   // Setup progress records the owner's choice. Independent observed evidence
   // remains authoritative for access, collaboration and background readiness.
-  await env.DB.prepare(`INSERT INTO agent_onboarding (workspace_id,agent_id,provider,surface,step,updated_at)
+  const saved = await env.DB.prepare(`INSERT INTO agent_onboarding (workspace_id,agent_id,provider,surface,step,updated_at)
     VALUES (?1,?2,?3,?4,?5,?6)
-    ON CONFLICT(workspace_id,agent_id) DO UPDATE SET provider=excluded.provider,surface=excluded.surface,step=excluded.step,updated_at=excluded.updated_at`)
+    ON CONFLICT(workspace_id,agent_id) DO UPDATE SET provider=excluded.provider,surface=excluded.surface,step=excluded.step,updated_at=excluded.updated_at
+    WHERE agent_onboarding.provider<>excluded.provider OR agent_onboarding.surface<>excluded.surface OR agent_onboarding.step<>excluded.step`)
     .bind(workspaceId(env), id, provider, surface, step, Date.now()).run();
   return getCollaborationConfiguration(env, actor, id);
 }

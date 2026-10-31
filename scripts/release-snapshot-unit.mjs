@@ -164,6 +164,133 @@ try {
     git(source, 'reset', '-q', '--hard', good);
   });
 
+  const marker = ['HOSTED', 'ONLY'].join('_');
+  const begin = marker + '_BEGIN', end = marker + '_END';
+  const overlaySource = repository('overlay-source', 'https://example.invalid/owner/overlay-private.git');
+  const overlayMirror = repository('overlay-mirror', 'https://example.invalid/owner/overlay-public.git');
+  const hostedBlock = (style, content, newline = '\n') => {
+    const wrap = (name) => style === 'html' ? `  <!-- ${name} -->` : `${style} ${name}`;
+    return [wrap(begin), content, wrap(end), ''].join(newline);
+  };
+  const credential = 'sk_live_' + 'ABCDEFGH1234';
+  const jsPublic = 'export const before = true;\r\nexport const after = true;';
+  const jsPrivate = 'export const before = true;\r\n' + hostedBlock('//', `const privateKey = "${credential}";`, '\r\n') + 'export const after = true;';
+  const binary = Buffer.concat([Buffer.from([0, 255, 13, 10]), Buffer.from(begin + '\nprivate bytes\n' + end)]);
+  const nonUtf8 = Buffer.concat([Buffer.from([255, 254]), Buffer.from(begin)]);
+  write(overlaySource, 'README.md', '# Public overlay fixture\n');
+  write(overlaySource, 'src/example.ts', jsPrivate);
+  write(overlaySource, 'index.html', '<head>\n' + hostedBlock('html', '<script>privateCode()</script>') + '</head>\n');
+  write(overlaySource, 'config.yml', 'public: true\n' + hostedBlock('#', 'private: true') + 'after: true\n');
+  write(overlaySource, 'bin/run.sh', '#!/bin/sh\n' + hostedBlock('#', 'echo private') + 'echo public\n', 0o755);
+  write(overlaySource, 'assets/binary.bin', binary);
+  write(overlaySource, 'assets/non-utf8.bin', nonUtf8);
+  write(overlaySource, 'scripts/release-snapshot.mjs', readFileSync(script), 0o755);
+  write(overlaySource, 'hosted/analytics.js', 'private implementation\n');
+  write(overlaySource, 'hosted/tests/nested.mjs', 'private test\n');
+  commit(overlaySource, 'Hosted overlay fixture');
+  write(overlayMirror, 'README.md', '# Old public fixture\n');
+  write(overlayMirror, 'hosted/analytics.js', 'previously exported implementation\n');
+  write(overlayMirror, 'hosted/obsolete.js', 'previously exported stale implementation\n');
+  commit(overlayMirror, 'Previously published hosted files');
+
+  check('overlay checks exclude hosted files and plan transformed content without mutating either checkout', () => {
+    const sourceHead = git(overlaySource, 'rev-parse', 'HEAD');
+    const mirrorHead = git(overlayMirror, 'rev-parse', 'HEAD');
+    const result = run('--source', overlaySource, '--mirror', overlayMirror, '--version', 'v1.0.0', '--check');
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^D hosted\/analytics\.js$/m);
+    assert.match(result.stdout, /^D hosted\/obsolete\.js$/m);
+    assert.doesNotMatch(result.stdout, /^[AM] hosted\//m);
+    assert.ok(!result.stdout.includes(credential) && !result.stderr.includes(credential));
+    assert.equal(git(overlaySource, 'rev-parse', 'HEAD'), sourceHead);
+    assert.equal(git(overlayMirror, 'rev-parse', 'HEAD'), mirrorHead);
+    assert.equal(git(overlaySource, 'status', '--porcelain'), '');
+    assert.equal(git(overlayMirror, 'status', '--porcelain'), '');
+    assert.equal(git(overlayMirror, 'tag', '-l'), '');
+    assert.ok(existsSync(join(overlayMirror, 'hosted/analytics.js')));
+    assert.equal(readFileSync(join(overlaySource, 'src/example.ts'), 'utf8'), jsPrivate);
+  });
+
+  check('snapshots strip all supported wrappers, remove old hosted files, and preserve binary bytes, line endings and modes', () => {
+    const result = run('--source', overlaySource, '--mirror', overlayMirror, '--version', 'v1.0.0');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(overlayMirror, 'src/example.ts'), 'utf8'), jsPublic);
+    assert.equal(readFileSync(join(overlayMirror, 'index.html'), 'utf8'), '<head>\n</head>\n');
+    assert.equal(readFileSync(join(overlayMirror, 'config.yml'), 'utf8'), 'public: true\nafter: true\n');
+    assert.equal(readFileSync(join(overlayMirror, 'bin/run.sh'), 'utf8'), '#!/bin/sh\necho public\n');
+    assert.equal(statSync(join(overlayMirror, 'bin/run.sh')).mode & 0o777, statSync(join(overlaySource, 'bin/run.sh')).mode & 0o777);
+    assert.match(git(overlayMirror, 'ls-files', '-s', 'bin/run.sh'), /^100755 /);
+    assert.deepEqual(readFileSync(join(overlayMirror, 'assets/binary.bin')), binary);
+    assert.deepEqual(readFileSync(join(overlayMirror, 'assets/non-utf8.bin')), nonUtf8);
+    assert.deepEqual(readFileSync(join(overlayMirror, 'scripts/release-snapshot.mjs')), readFileSync(script));
+    assert.ok(!existsSync(join(overlayMirror, 'hosted')));
+    assert.doesNotMatch(git(overlayMirror, 'ls-files'), /^hosted\//m);
+    assert.equal(git(overlayMirror, 'status', '--porcelain'), '');
+    assert.equal(git(overlaySource, 'status', '--porcelain'), '');
+    assert.equal(readFileSync(join(overlaySource, 'src/example.ts'), 'utf8'), jsPrivate);
+  });
+
+  check('hosted-only edits leave public snapshot unchanged and do not create another release', () => {
+    write(overlaySource, 'src/example.ts', jsPrivate.replace('const privateKey', 'const changedPrivateKey'));
+    write(overlaySource, 'hosted/analytics.js', 'new private implementation\n');
+    commit(overlaySource, 'Only hosted behavior changed');
+    const mirrorHead = git(overlayMirror, 'rev-parse', 'HEAD');
+    for (const flags of [[], ['--check']]) {
+      const result = run('--source', overlaySource, '--mirror', overlayMirror, '--version', 'v1.0.1', ...flags);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /^release-snapshot: Nothing changed since the last snapshot$/m);
+      assert.equal(git(overlayMirror, 'rev-parse', 'HEAD'), mirrorHead);
+      assert.equal(git(overlayMirror, 'tag', '-l'), 'v1.0.0');
+      assert.equal(git(overlayMirror, 'status', '--porcelain'), '');
+    }
+  });
+
+  check('malformed, nested, unclosed and stray markers fail before any mirror changes', () => {
+    const sourceHead = git(overlaySource, 'rev-parse', 'HEAD');
+    const mirrorHead = git(overlayMirror, 'rev-parse', 'HEAD');
+    const cases = [
+      [`// ${begin}\n// ${begin}\n// ${end}\n// ${end}\n`, /nests a hosted-only block/],
+      [`// ${end}\n`, /closes a hosted-only block that was not opened/],
+      [`// ${begin}\nprivateCode();\n`, /unclosed hosted-only block/],
+      [`const x = 1; // ${begin}\n`, /malformed hosted-only marker/],
+      [`// ${begin} trailing text\n`, /malformed hosted-only marker/],
+      [`<!-- ${begin}\n`, /malformed hosted-only marker/],
+      [`// ${begin}\n# ${end}\n`, /different comment wrapper/],
+      [`// ${begin.toLowerCase()}\n`, /malformed hosted-only marker/],
+      [`const marker = '${begin}';\n`, /malformed hosted-only marker/],
+      [`// ${marker}_BEGN\n`, /malformed hosted-only marker/],
+      [`// ${begin}\nconst marker = '${end}';\n// ${end}\n`, /malformed hosted-only marker/],
+    ];
+    for (const [content, error] of cases) {
+      write(overlaySource, 'README.md', '# A public change that must not be written\n');
+      write(overlaySource, 'src/invalid.ts', content);
+      commit(overlaySource, 'Invalid marker fixture');
+      const result = run('--source', overlaySource, '--mirror', overlayMirror, '--version', 'v1.0.1');
+      assert.equal(result.status, 1, content);
+      assert.match(result.stderr, error);
+      assert.match(result.stderr, /src\/invalid\.ts:\d+/);
+      assert.equal(git(overlayMirror, 'rev-parse', 'HEAD'), mirrorHead);
+      assert.equal(git(overlayMirror, 'status', '--porcelain'), '');
+      assert.equal(git(overlayMirror, 'tag', '-l'), 'v1.0.0');
+      assert.equal(readFileSync(join(overlayMirror, 'README.md'), 'utf8'), '# Public overlay fixture\n');
+      assert.ok(!existsSync(join(overlayMirror, 'src/invalid.ts')));
+    }
+    git(overlaySource, 'reset', '-q', '--hard', sourceHead);
+  });
+
+  check('credentials retained in public bytes are still refused after hosted-block stripping', () => {
+    write(overlaySource, 'src/public-secret.ts', hostedBlock('//', 'privateCode();') + `const publicKey = "${credential}";\n`);
+    commit(overlaySource, 'Public credential fixture');
+    const mirrorHead = git(overlayMirror, 'rev-parse', 'HEAD');
+    const result = run('--source', overlaySource, '--mirror', overlayMirror, '--version', 'v1.0.1');
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /src\/public-secret\.ts matches the sk_live_ key pattern/);
+    assert.ok(!result.stdout.includes(credential) && !result.stderr.includes(credential));
+    assert.equal(git(overlayMirror, 'rev-parse', 'HEAD'), mirrorHead);
+    assert.equal(git(overlayMirror, 'status', '--porcelain'), '');
+    assert.ok(!existsSync(join(overlayMirror, 'src/public-secret.ts')));
+  });
+
   console.log(`Release snapshot checks passed: ${count}`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -1,4 +1,6 @@
 import { initHandoffDemo, initStarterPrompt } from './demo.js';
+import './sign.js';
+import './motion.js';
 
 initHandoffDemo();
 initStarterPrompt();

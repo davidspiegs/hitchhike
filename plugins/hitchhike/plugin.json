@@ -1,0 +1,103 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hitchhike",
+  "version": "0.1.0",
+  "description": "Send tasks, prompts and follow-ups to your other AI assistants through Hitchhike, and pick up work they send back.",
+  "author": {
+    "name": "David Spiegel",
+    "url": "https://github.com/davidspiegs"
+  },
+  "homepage": "https://hitchhike.dev",
+  "repository": "https://github.com/davidspiegs/hitchhike",
+  "license": "MIT",
+  "keywords": ["hitchhike", "multi-agent", "delegation", "collaboration"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Hitchhike",
+        "shortDescription": "Hand tasks to your other AIs",
+        "longDescription": "Hitchhike lets the AI assistants you already use work together. Connect it here, then ask this assistant to send a task, a question or a request for a second opinion to another assistant in your Hitchhike workspace, such as Claude, Claude Code, Codex, Grok, Grok Bot or Muse. Later, ask it to check for the reply and bring the result back into your conversation. It can also pick up requests your other assistants send to it, ask a clarifying question, and send back its answer.\n\nEach assistant works through its own account, tools and permissions. Hitchhike keeps requests, replies and their history together in your workspace, where you can see what is waiting, in progress or ready.\n\nYou decide which assistants can send work, which can receive it, who each one can hand work to, and what kinds of work it takes. A request carries only the context the assistant includes in it. Hitchhike does not copy your chat history or files.\n\nLimitations: Hitchhike does not start other apps. A receiving assistant picks up a request when you use it, or on a schedule you set up in that assistant, so replies can take time. You need a Hitchhike account and at least one other connected assistant. If this assistant isn't connected yet, you can create its connection while you sign in. The hosted service has usage limits. Hitchhike is open source under the MIT License.",
+        "developerName": "David Spiegel",
+        "category": "Productivity",
+        "capabilities": [
+          "Send tasks and questions to your other assistants",
+          "Check for replies and retrieve finished work",
+          "Pick up and answer requests sent to this assistant",
+          "Ask or answer clarifying questions",
+          "See which assistants you can hand work to"
+        ],
+        "websiteURL": "https://hitchhike.dev",
+        "supportURL": "https://github.com/davidspiegs/hitchhike/issues",
+        "privacyPolicyURL": "https://hitchhike.dev/privacy",
+        "termsOfServiceURL": "https://hitchhike.dev/terms",
+        "defaultPrompt": [
+          "Which of my assistants can I hand work to through Hitchhike?",
+          "Ask one of my other assistants through Hitchhike to review this plan and send back the three biggest risks.",
+          "Check Hitchhike for replies to the work I sent."
+        ],
+        "brandColor": "#EC5C20",
+        "brandColorDark": "#EC5C20",
+        "composerIcon": "./assets/composer-icon.png",
+        "logo": "./assets/icon.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "List the assistants this connection can hand work to",
+              "prompt": "Which of my assistants can I hand work to through Hitchhike?",
+              "tools_triggered": "get_collaboration_config",
+              "expected_behavior": "Names Research helper and the kinds of work it takes, from this connection's current collaboration settings. Sends nothing."
+            },
+            {
+              "description": "Send a new task to a connected assistant",
+              "prompt": "Ask Research helper through Hitchhike to find three public sources about four-day work weeks and send back links with one-line summaries.",
+              "tools_triggered": "get_collaboration_config, send_message",
+              "expected_behavior": "Sends Research helper one message that asks for a reply, reports the conversation it started and says the answer will arrive later. Does not claim the work is finished."
+            },
+            {
+              "description": "Retrieve a finished reply",
+              "prompt": "Check Hitchhike for replies to the work I sent.",
+              "tools_triggered": "check_conversation_inbox, acknowledge_conversation",
+              "expected_behavior": "Shows Research helper's answer in the seeded conversation about the launch checklist, then acknowledges the page it read."
+            },
+            {
+              "description": "Pick up and answer a waiting request",
+              "prompt": "Is any work waiting for me in Hitchhike? Pick up the next request and answer it.",
+              "tools_triggered": "preview_requests, claim_request, reply_to_request",
+              "expected_behavior": "Claims the oldest seeded request from Research helper, answers it, and replies with status completed under that claim."
+            },
+            {
+              "description": "Ask the sender a clarifying question",
+              "prompt": "Pick up the next Hitchhike request, and before answering, ask the sender what budget to assume.",
+              "tools_triggered": "preview_requests, claim_request, reply_to_request",
+              "expected_behavior": "Claims the next seeded request and replies with status needs_input and one question about the budget, instead of a final answer."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Reaching an assistant outside the user's workspace",
+              "prompt": "Send this draft to my colleague Sam's ChatGPT through Hitchhike.",
+              "expected_behavior": "Explains that Hitchhike only reaches assistants connected to the user's own workspace, lists the ones available, and sends nothing."
+            },
+            {
+              "description": "Email or public posting",
+              "prompt": "Use Hitchhike to email this summary to jane@example.com.",
+              "expected_behavior": "Explains that Hitchhike exchanges work only between the user's connected assistants and cannot send email. Sends nothing."
+            },
+            {
+              "description": "Bulk deletion of history",
+              "prompt": "Delete all my Hitchhike history.",
+              "expected_behavior": "Explains that it cannot delete history and points to Workspace settings at hitchhike.dev for export or deletion. Calls no write tools."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Hitchhike does not sell products or process payments."
+      },
+      "publication": {
+        "release_notes": "First directory release: send tasks to your connected assistants, retrieve their replies, and pick up and answer work sent to this assistant."
+      }
+    }
+  }
+}

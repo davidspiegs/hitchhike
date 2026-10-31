@@ -120,6 +120,8 @@ try {
   await check("discovery advertises PKCE, opaque resource authorization, and revocation",async () => {
     const metadata = await (await handle(req("/.well-known/oauth-authorization-server"))).json();
     assert.deepEqual(metadata.code_challenge_methods_supported,["S256"]); assert.ok(metadata.revocation_endpoint); assert.ok(metadata.authorization_response_iss_parameter_supported);
+    // Claude uses metadata documents only when both fields are advertised.
+    assert.equal(metadata.client_id_metadata_document_supported,true); assert.deepEqual(metadata.token_endpoint_auth_methods_supported,["none"]);
     const resource = await (await handle(req("/.well-known/oauth-protected-resource/mcp"))).json(); assert.equal(resource.resource,base + "/mcp");
   });
   await check("authorization validates exact redirect, PKCE method, scopes, and resource",async () => {
@@ -298,6 +300,136 @@ try {
     }
     assert.equal(sqlite.prepare("SELECT count(*) AS n FROM auth_sessions").get().n,before);
     globalThis.fetch = originalFetch;
+  });
+  const day = 86_400_000;
+  const clientCount = (where, ...values) => sqlite.prepare(`SELECT count(*) AS n FROM oauth_clients WHERE ${where}`).get(...values).n;
+  await check("only unclaimed registrations share a rolling allowance, so authorized clients never lock out new users",async () => {
+    sqlite.exec("DELETE FROM auth_rate_limits");
+    const now = Date.now(), seed = sqlite.prepare("INSERT INTO oauth_clients(id,name,redirect_uris,created_at,claimed_at) VALUES (?,?,?,?,?)");
+    assert.ok(sqlite.prepare("SELECT claimed_at FROM oauth_clients WHERE id=?").get(client.client_id).claimed_at,"Authorizing a client claims it");
+    // Far above the previous 1,000-row global ceiling.
+    sqlite.exec("BEGIN"); for (let i = 0; i < 2500; i++) seed.run("client_claimed_" + i,"Claimed","[]",now,now); sqlite.exec("COMMIT");
+    assert.equal((await registration()).status,201);
+    const pending = clientCount("claimed_at IS NULL AND metadata_expires_at IS NULL AND created_at>?",now - day);
+    sqlite.exec("BEGIN"); for (let i = pending; i < 2000; i++) seed.run("client_pending_" + i,"Pending","[]",now,null); sqlite.exec("COMMIT");
+    const full = await registration();
+    assert.equal(full.status,429); assert.equal((await full.json()).error,"client_capacity");
+    // Abandoned registrations stop counting after a day, then expire after a week.
+    sqlite.prepare("UPDATE oauth_clients SET created_at=? WHERE id LIKE 'client_pending_%'").run(now - 2 * day);
+    assert.equal((await registration()).status,201);
+    sqlite.prepare("UPDATE oauth_clients SET created_at=? WHERE id LIKE 'client_claimed_%' OR id LIKE 'client_pending_%'").run(now - 8 * day);
+    await auth.cleanupAuth(env,now);
+    assert.equal(clientCount("id LIKE 'client_pending_%'"),0);
+    assert.equal(clientCount("id LIKE 'client_claimed_%'"),2500,"Previously authorized clients keep the 30-day retention");
+    sqlite.prepare("UPDATE oauth_clients SET created_at=? WHERE id LIKE 'client_claimed_%'").run(now - 31 * day);
+    await auth.cleanupAuth(env,now);
+    assert.equal(clientCount("id LIKE 'client_claimed_%'"),0);
+    assert.equal(clientCount("id=?",client.client_id),1,"A client with grants is never pruned");
+  });
+  await check("client names only pre-fill a platform suggestion",async () => {
+    for (const [name,platform] of [["Claude Code",'claude-code'],["claude-code (relay)","claude-code"],["Claude","claude"],["claudeai","claude"],["OpenAI Codex","codex"],["ChatGPT","chatgpt"],["OpenAI","chatgpt"],["Grok","grok"],["Cursor",null],["Test client",null]]) {
+      assert.equal(auth.suggestedPlatform(name),platform,name);
+    }
+  });
+  const metadataUrl = "https://apps.example.com/oauth/hitchhike-client.json";
+  const metadataDocument = (overrides = {}) => ({client_id:metadataUrl,client_name:"Example Code",redirect_uris:["http://127.0.0.1/callback","http://localhost/callback","https://apps.example.com/oauth/callback"],token_endpoint_auth_method:"none",grant_types:["authorization_code","refresh_token"],response_types:["code"],...overrides});
+  const fetches = [];
+  let serve = () => Response.json(metadataDocument());
+  const metadataFetch = async (url,opts) => { fetches.push({url:String(url),opts}); return serve(); };
+  const metadataAuthorize = (redirect,clientId = metadataUrl) => handle(req(authorizeUrl({client_id:clientId,redirect_uri:redirect}),{headers:{Cookie:alice.cookie}}));
+  await check("client ID metadata documents authorize without registration and match loopback ports at run time",async () => {
+    sqlite.exec("DELETE FROM auth_rate_limits");
+    globalThis.fetch = metadataFetch;
+    try {
+      const page = await metadataAuthorize("http://127.0.0.1:3118/callback");
+      assert.equal(page.status,200);
+      const content = await page.text();
+      assert.match(content,/Connect Example Code/); assert.match(content,/Published by<\/dt><dd>apps\.example\.com/);
+      assert.equal(fetches.length,1); assert.equal(fetches[0].url,metadataUrl); assert.equal(fetches[0].opts.redirect,"manual");
+      for (const redirect of ["http://127.0.0.1:4119/callback","http://localhost:5000/callback","https://apps.example.com/oauth/callback"]) assert.equal((await metadataAuthorize(redirect)).status,200,redirect);
+      assert.equal(fetches.length,1,"A valid document is cached");
+      for (const redirect of ["http://127.0.0.1:3118/other","http://[::1]:3118/callback","https://apps.example.com:8443/oauth/callback","https://apps.example.com/oauth/callback/","http://127.0.0.1:3118/./callback"]) assert.equal((await metadataAuthorize(redirect)).status,400,redirect);
+      const requestId = content.match(/name="request_id" value="([^"]+)"/)?.[1];
+      const approved = await handle(req("/oauth/authorize",form({request_id:requestId,csrf_token:alice.csrfToken,agent_id:"alice-agent",decision:"allow"},{Cookie:alice.cookie,Origin:base})));
+      assert.equal(approved.status,303);
+      const callback = new URL(approved.headers.get("Location"));
+      assert.equal(callback.origin + callback.pathname,"http://127.0.0.1:3118/callback");
+      const issued = await handle(req("/oauth/token",form({grant_type:"authorization_code",client_id:metadataUrl,redirect_uri:"http://127.0.0.1:3118/callback",code:callback.searchParams.get("code"),code_verifier:verifier,resource:base + "/mcp"})));
+      assert.equal(issued.status,200);
+      const tokens = await issued.json();
+      assert.equal((await auth.authenticateOAuth(req("/mcp",{headers:{Authorization:"Bearer " + tokens.access_token}}),env)).agent.id,"alice-agent");
+      assert.equal((await handle(req("/oauth/token",form({grant_type:"refresh_token",client_id:"client_" + "x".repeat(24),refresh_token:tokens.refresh_token})))).status,400,"Refresh stays bound to the metadata client ID");
+      assert.equal((await handle(req("/oauth/token",form({grant_type:"refresh_token",client_id:metadataUrl,refresh_token:tokens.refresh_token})))).status,200);
+      const listed = await (await handle(req("/auth/grants",{headers:{Cookie:alice.cookie}}))).json();
+      assert.ok(listed.grants.some((g) => g.client_name === "Example Code"),"Granted metadata clients appear in the owner's list");
+      assert.ok(sqlite.prepare("SELECT claimed_at FROM oauth_clients WHERE id=?").get(metadataUrl).claimed_at);
+      // ChatGPT publishes both fields; only the supported intersection counts.
+      sqlite.prepare("DELETE FROM oauth_clients WHERE id=?").run("https://chat.example.com/oauth/client.json");
+      serve = () => Response.json({client_id:"https://chat.example.com/oauth/client.json",client_name:"Example Chat",redirect_uris:["https://chat.example.com/connector_platform_oauth_redirect"],token_endpoint_auth_methods_supported:["none","private_key_jwt"],token_endpoint_auth_method:"private_key_jwt"});
+      assert.equal((await metadataAuthorize("https://chat.example.com/connector_platform_oauth_redirect","https://chat.example.com/oauth/client.json")).status,200);
+    } finally { globalThis.fetch = originalFetch; serve = () => Response.json(metadataDocument()); }
+  });
+  await check("client metadata documents are validated strictly and failures are never cached",async () => {
+    sqlite.exec("DELETE FROM auth_rate_limits");
+    globalThis.fetch = metadataFetch;
+    const fresh = "https://apps.example.com/oauth/fresh.json", attempt = () => { sqlite.prepare("DELETE FROM oauth_clients WHERE id=?").run(fresh); return metadataAuthorize("https://apps.example.com/oauth/callback",fresh); };
+    const documentFor = (overrides) => ({...metadataDocument(),client_id:fresh,...overrides});
+    try {
+      const without = (key) => { const value = documentFor({}); delete value[key]; return value; };
+      const invalid = {
+        "mismatched client_id": () => Response.json(documentFor({client_id:metadataUrl})),
+        "client secret": () => Response.json(documentFor({client_secret:"shared"})),
+        "secret client authentication": () => Response.json(documentFor({token_endpoint_auth_method:"client_secret_basic"})),
+        "no public client authentication": () => Response.json(without("token_endpoint_auth_method")),
+        "key-only authentication list": () => Response.json(documentFor({token_endpoint_auth_methods_supported:["private_key_jwt"]})),
+        "missing redirects": () => Response.json(without("redirect_uris")),
+        "cross-origin redirect": () => Response.json(documentFor({redirect_uris:["https://apps.example.com/oauth/callback","https://evil.example.com/oauth/callback"]})),
+        "unsupported grant": () => Response.json(documentFor({grant_types:["client_credentials"]})),
+        "HTTP redirect": () => new Response(null,{status:302,headers:{Location:"https://apps.example.com/other.json"}}),
+        "missing document": () => new Response("missing",{status:404}),
+        "HTML": () => new Response(JSON.stringify(documentFor({})),{headers:{"Content-Type":"text/html"}}),
+        "invalid JSON": () => new Response("{",{headers:{"Content-Type":"application/json"}}),
+        "oversized document": () => Response.json(documentFor({client_name:"x".repeat(6000)})),
+        "network failure": () => { throw new TypeError("offline"); },
+      };
+      for (const [label,responder] of Object.entries(invalid)) {
+        serve = responder;
+        const response = await attempt();
+        assert.equal(response.status,400,label); assert.equal(clientCount("id=?",fresh),0,label + " is not cached");
+      }
+      serve = () => Response.json(documentFor({}));
+      assert.equal((await attempt()).status,200,"A corrected document works immediately");
+      // no-store is respected: every use fetches again.
+      serve = () => Response.json(documentFor({}),{headers:{"Cache-Control":"no-store"}});
+      sqlite.prepare("DELETE FROM oauth_clients WHERE id=?").run(fresh);
+      const before = fetches.length;
+      for (let i = 0; i < 2; i++) assert.equal((await metadataAuthorize("https://apps.example.com/oauth/callback",fresh)).status,200);
+      assert.equal(fetches.length,before + 2);
+      serve = () => Response.json(documentFor({}),{headers:{"Cache-Control":"public, max-age=60"}});
+      sqlite.prepare("DELETE FROM oauth_clients WHERE id=?").run(fresh);
+      const fetchedAt = Date.now();
+      assert.equal((await metadataAuthorize("https://apps.example.com/oauth/callback",fresh)).status,200);
+      const expires = sqlite.prepare("SELECT metadata_expires_at FROM oauth_clients WHERE id=?").get(fresh).metadata_expires_at;
+      assert.ok(expires >= fetchedAt + 59_000 && expires <= Date.now() + 60_000);
+      // Unsafe or ambiguous client IDs are refused before any request.
+      const fetched = fetches.length;
+      for (const unsafe of ["http://apps.example.com/client.json","https://127.0.0.1/client.json","https://[::1]/client.json","https://localhost/client.json","https://metadata.internal/client.json","https://apps.example.com:8443/client.json","https://apps.example.com/","https://APPS.example.com/client.json","https://apps.example.com/a/../client.json","https://apps.example.com/client.json?x=1","https://apps.example.com/client.json#x","https://user@apps.example.com/client.json","https://" + "a".repeat(510) + ".com/x"]) {
+        assert.equal((await metadataAuthorize("https://apps.example.com/oauth/callback",unsafe)).status,400,unsafe);
+      }
+      const selfHosted = "https://relay.example.com", selfEnv = {...env,PUBLIC_URL:selfHosted};
+      const selfUrl = authorizeUrl({client_id:selfHosted + "/client.json",redirect_uri:selfHosted + "/callback"});
+      assert.equal((await handle(new Request(selfHosted + selfUrl,{headers:{Cookie:alice.cookie}}),selfEnv)).status,400,"The relay never fetches a document from itself");
+      assert.equal(fetches.length,fetched);
+      // Oversized client IDs are refused at the token endpoint too.
+      assert.equal((await handle(req("/oauth/token",form({grant_type:"authorization_code",client_id:"https://apps.example.com/" + "x".repeat(600),code:"code_x",code_verifier:verifier,redirect_uri:"https://apps.example.com/oauth/callback"})))).status,400);
+    } finally { globalThis.fetch = originalFetch; serve = () => Response.json(metadataDocument()); }
+  });
+  await check("cached metadata documents expire unless an active grant still uses them",async () => {
+    const later = Date.now() + 3 * day;
+    assert.ok(clientCount("id=?","https://apps.example.com/oauth/fresh.json"));
+    await auth.cleanupAuth(env,later);
+    assert.equal(clientCount("id=?","https://apps.example.com/oauth/fresh.json"),0);
+    assert.equal(clientCount("id=?",metadataUrl),1,"A document client with grants stays listed");
   });
   await check("account deletion removes sessions and all grant material for the owner only",async () => {
     const before = sqlite.prepare("SELECT count(*) AS n FROM users").get().n;

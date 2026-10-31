@@ -103,6 +103,8 @@ try {
   const noStore = { 'Cache-Control': 'no-store', 'CDN-Cache-Control': 'no-store', 'Vercel-CDN-Cache-Control': 'no-store' };
   for (const [route, html] of Object.entries(pages)) {
     if (/\bnonce=/.test(html)) throw new Error(`Static page ${route} contains a reusable nonce`);
+    // Warming public files must not grant the landing page auth API/frame permissions.
+    let policy = contentSecurityPolicy(html, config, { clerk: ['/app', '/app-next', '/sign-in', '/connect'].includes(route), warmSignIn: route === '/' });
     const path = route === '/' ? 'index.html' : route.slice(1) + '/index.html';
     await mkdir(dirname(join(destination, path)), { recursive: true });
     await writeFile(join(destination, path), html);
@@ -111,8 +113,7 @@ try {
       dest: '/' + path,
       headers: {
         ...securityHeaders,
-        // Warming public files must not grant the landing page auth API/frame permissions.
-        'Content-Security-Policy': contentSecurityPolicy(html, config, { clerk: ['/app', '/app-next', '/sign-in', '/connect'].includes(route), warmSignIn: route === '/' }),
+        'Content-Security-Policy': policy,
         ...noStore,
         ...(['/', '/privacy', '/docs', '/docs/use-cases', '/docs/connect', '/docs/using-hitchhike', '/docs/background', '/docs/troubleshooting'].includes(route) ? {} : { 'X-Robots-Tag': 'noindex' }),
       },

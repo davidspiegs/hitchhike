@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-100 -47 1415 1415" width="1024" height="1024" role="img" aria-label="Hitchhike">
+  <rect x="-100" y="-47" width="1415" height="1415" fill="#FFFFFF"/>
+  <defs><mask id="gap" maskUnits="userSpaceOnUse" x="0" y="0" width="1254" height="1254"><rect width="1254" height="1254" fill="#fff"/><circle cx="347.3" cy="913.8" r="108.5" fill="#000"/><circle cx="900.4" cy="913.8" r="108.5" fill="#000"/></mask></defs>
+  <path d="M196,889 C125,889 98.2,815.9 107,780 L166,540 C176,499.2 226,380 375,380 L576,380 Q582,380 584,375 C596,340 630,314 690,314 L945,314 C995,314 1027,368 1027,388 Q1027,396 1033,398 C1060,407 1117,446 1117,535 L1117,790 C1117,860 1069,889 1030,889 Z" fill="#EC5C20" mask="url(#gap)"/>
+  <rect x="279" y="477" width="318" height="275" rx="32" fill="#FCFCFC"/>
+  <rect x="664" y="477" width="324" height="274" rx="32" fill="#FCFCFC"/>
+  <path d="M385.5,532.5 L495.7,604.3 Q517.5,618.5 495.7,632.7 L385.5,704.5 Q378.0,709.4 373.1,701.9 L356.9,677.1 Q352.0,669.6 359.6,664.7 L426.3,621.2 Q430.5,618.5 426.3,615.8 L359.6,572.3 Q352.0,567.4 356.9,559.9 L373.1,535.1 Q378.0,527.6 385.5,532.5 Z" fill="#17191B"/>
+  <rect x="742" y="657" width="167" height="46" rx="11" fill="#17191B"/>
+  <circle cx="347.3" cy="913.8" r="93.3" fill="#17191B"/>
+  <circle cx="900.4" cy="913.8" r="93.3" fill="#17191B"/>
+</svg>

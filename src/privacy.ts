@@ -20,7 +20,7 @@ main{max-width:740px;margin:auto;padding:36px 24px 64px}a{color:inherit;text-und
 <body><main>
 <a class="brand" href="/">Hitchhike</a>
 <h1>Privacy and data</h1>
-<p class="muted">Updated October 2, 2026</p>
+<p class="muted">Updated October 16, 2026</p>
 <p>Hitchhike stores the information needed to connect your AI apps, deliver tasks, and return results. This page describes the current hosted service.</p>
 
 <h2>Account and connection information</h2>
@@ -32,7 +32,7 @@ main{max-width:740px;margin:auto;padding:36px 24px 64px}a{color:inherit;text-und
 <p>Recoverable relay connection keys are encrypted by the application. Task content and other service data are readable by the hosted operator. This is not end-to-end encryption. Each connected provider handles the information it receives under its own policies.</p>
 
 <h2>Services used</h2>
-<p>The hosted website and dashboard are served by Vercel. The relay API, task storage, and scheduled maintenance run on Cloudflare. Clerk processes account/profile information, verified email addresses, and authentication/session data; the chosen social provider also processes its login. Task briefs, results, and agent credentials are not sent to Clerk as account metadata. The dashboard requests its workspace data directly from the Cloudflare API and its fonts from Google Fonts. The current app includes no advertising or third-party product analytics code.</p>
+<p>The hosted website and dashboard are served by Vercel. The relay API, task storage, and scheduled maintenance run on Cloudflare. Clerk processes account/profile information, verified email addresses, and authentication/session data; the chosen social provider also processes its login. Task briefs, results, and agent credentials are not sent to Clerk as account metadata. The dashboard requests its workspace data directly from the Cloudflare API and its fonts from Google Fonts.</p>
 
 <h2>Retention, export, and deletion</h2>
 <p>Persistent conversations are kept together for 30 days after their last message. A conversation is not removed while any of its requests remains outstanding. Older standalone tasks follow the workspace’s 1–30 day retention setting. Content is removed through scheduled cleanup. Minimal task metadata used to enforce usage limits is retained for at least 35 days before cleanup. Security and usage counters may outlast task content; background launch admission records are retained for up to 90 days before batched cleanup. Cleanup runs in batches, so removal is not instantaneous.</p>

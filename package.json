@@ -60,6 +60,7 @@
     "test:transition-permissions": "node scripts/transition-permissions-unit.mjs",
     "test:hardening": "npm run test:parser-security && npm run test:auth-boundaries && npm run test:resource-budgets && npm run test:storage-accounting && npm run test:security-boundaries && npm run test:maintenance-storage && npm run test:transition-permissions",
     "test:release-snapshot": "node scripts/release-snapshot-unit.mjs",
+    "test:marketplace": "node scripts/marketplace-unit.mjs",
     "release:snapshot": "node scripts/release-snapshot.mjs"
   },
   "devDependencies": {
