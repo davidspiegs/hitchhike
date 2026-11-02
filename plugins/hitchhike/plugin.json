@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hitchhike",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Send tasks, prompts and follow-ups to your other AI assistants through Hitchhike, and pick up work they send back.",
   "author": {
     "name": "David Spiegel",
@@ -98,7 +98,7 @@
         "commerce_description": "Hitchhike does not sell products or process payments."
       },
       "publication": {
-        "release_notes": "OpenAI submission candidate: exchange tasks and replies between connected assistants, with explicit irreversible-action annotations and reproducible reviewer workflows. Not yet submitted or approved.",
+        "release_notes": "OpenAI submission candidate: exchange tasks and replies between connected assistants, with explicit irreversible-action annotations, reproducible reviewer workflows, and clearer guidance for unsupported provider-account access, direct email/public posting, and MCP bulk-history deletion. Not yet submitted or approved.",
         "countries": []
       }
     }

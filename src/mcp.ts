@@ -606,7 +606,12 @@ function tools(ctx: Ctx): Tool[] {
 
 function instructions(agent: AgentRow, scopes?: readonly string[], conversationTools = false): string {
   const allowed = (scope: string) => !scopes || scopes.includes(scope);
-  const parts = [`You're connected to your user's agent relay as "${agent.id}" (${agent.name}).`];
+  const parts = [
+    `You're connected to your user's agent relay as "${agent.id}" (${agent.name}).`,
+    "Before calling any Hitchhike tool, check whether the request is supported. Hitchhike exchanges explicitly supplied work and messages between authorized connections and reads their history stored in Hitchhike. Other assistants may deliberately supply authorized content; connecting them does not grant access to their provider accounts or chat archives.",
+    "Hitchhike cannot log into provider accounts or fetch their chat histories, has no direct email or public-posting tool, and has no MCP bulk-history deletion tool. For these unsupported requests, explain the limitation without calling Hitchhike tools or delegating the unsupported operation to a peer as a workaround.",
+    "For owner-managed export or deletion on hosted Hitchhike, open https://hitchhike.dev/app?experience=legacy, then Workspace settings. Export workspace downloads the data; Delete workspace permanently removes active workspace data and revokes its connections. It does not delete provider conversations. Self-hosted owners use their own relay's Workspace settings.",
+  ];
   if (allowed("relay:read")) parts.push("When the person asks to set up Hitchhike, call get_started and follow its next step.");
   if (allowed("relay:read")) parts.push("Use connection_status to verify your connection identity and effective permissions before setup tests, especially when an app authorization is shared between products.");
   if (agent.can_request && (allowed("relay:send") || allowed("relay:read"))) {

@@ -7,9 +7,17 @@ description: Use Hitchhike to consult the user's connected assistants, exchange 
 
 Hitchhike connects assistants the user already uses. Choose another assistant when its capabilities, context, or separate usage allowance help the task. Use judgment; do not delegate every small question or promise a response time without checking how that recipient picks up work.
 
+## Check capability before tools
+
+Check whether Hitchhike supports the request before calling `connection_status` or any other tool. Hitchhike exchanges explicitly supplied work and messages between authorized connections and reads their history stored in Hitchhike. Other assistants may deliberately supply authorized content; connecting them does not grant access to their provider accounts or chat archives.
+
+Hitchhike cannot log into provider accounts or fetch their chat histories, has no direct email or public-posting tool, and has no MCP bulk-history deletion tool. For these unsupported requests, explain the limitation without calling Hitchhike tools or delegating the unsupported operation to a peer as a workaround.
+
+For owner-managed export or deletion on hosted Hitchhike, open [the Hitchhike workspace](https://hitchhike.dev/app?experience=legacy), then **Workspace settings**. **Export workspace** downloads the data; **Delete workspace** permanently removes active workspace data and revokes its connections. It does not delete provider conversations. Self-hosted owners use their own relay's Workspace settings.
+
 ## Establish identity and permission
 
-Verify the authenticated connection with `connection_status` (HTTP: `GET /v1/me`). When advertised, call `get_collaboration_config` (HTTP: `GET /v1/configuration`) at the start of work and before continuing an exchange. Use the current roster, permitted collaborators, work categories, context-sharing rules, standing responsibilities, and approval boundaries. Configured descriptions indicate intended strengths, not verified capabilities.
+For supported work, verify the authenticated connection with `connection_status` (HTTP: `GET /v1/me`). When advertised, call `get_collaboration_config` (HTTP: `GET /v1/configuration`) at the start of work and before continuing an exchange. Use the current roster, permitted collaborators, work categories, context-sharing rules, standing responsibilities, and approval boundaries. Configured descriptions indicate intended strengths, not verified capabilities.
 
 Share only relevant task context deliberately supplied for this work and sources approved for that recipient. Do not transfer entire chats, unrelated private material, secrets, or credentials automatically. External actions still require the provider's normal permissions. If the scope is not covered by the user's request or standing responsibilities, obtain the authorization the action needs.
 
