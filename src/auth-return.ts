@@ -17,18 +17,25 @@ export function safeAuthReturn(value: string | null, base: string): string {
   return target.pathname+target.search;
 }
 
+/** The workspace may carry one choice through sign-in: which assistant to add. */
+const ASSISTANT_INTENT = /^[a-z][a-z-]{1,23}$/;
+
 /** Browser UI routes are deliberately separate from backend OAuth endpoints. */
 export function safeFrontendReturn(value: string | null, base: string): string {
-  if (!value) return "/app";
+  if (!value) return "/app-next";
   let target: URL;
-  try { target = new URL(value, base); } catch { return "/app"; }
+  try { target = new URL(value, base); } catch { return "/app-next"; }
   if (target.origin !== base || target.username || target.password ||
-      !["/app","/app-next","/connect"].includes(target.pathname)) return "/app";
-  if (target.pathname === "/app" || target.pathname === "/app-next") return target.pathname;
+      !["/app","/app-next","/connect"].includes(target.pathname)) return "/app-next";
+  if (target.pathname === "/app") return target.pathname;
+  if (target.pathname === "/app-next") {
+    const assistant = target.searchParams.getAll("assistant");
+    return assistant.length === 1 && ASSISTANT_INTENT.test(assistant[0]) ? "/app-next?assistant=" + assistant[0] : "/app-next";
+  }
   const params = new URLSearchParams();
   for (const key of authorizationParameters) {
     // Do not turn an ambiguous authorization request into a different request.
-    if (target.searchParams.getAll(key).length > 1) return "/app";
+    if (target.searchParams.getAll(key).length > 1) return "/app-next";
     const value = target.searchParams.get(key);
     if (value !== null) params.set(key, value);
   }

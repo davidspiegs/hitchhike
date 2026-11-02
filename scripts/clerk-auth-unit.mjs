@@ -310,9 +310,13 @@ try {
   await check("frontend return state preserves only app or sanitized consent navigation", async () => {
     const frontend = "https://app.example.test";
     for (const value of [null, "/", "/oauth/authorize?state=x", "/auth/logout", "//evil.example.test/connect", "https://app.example.test.evil.invalid/connect", "/\\evil.example.test/connect", "/connect?state=a&state=b", "https://user:pass@app.example.test/connect"]) {
-      assert.equal(auth.safeFrontendReturn(value, frontend), "/app");
+      assert.equal(auth.safeFrontendReturn(value, frontend), "/app-next");
     }
     assert.equal(auth.safeFrontendReturn("/app?__clerk_handshake=secret#secret", frontend), "/app");
+    assert.equal(auth.safeFrontendReturn("/app-next?assistant=claude&__clerk_handshake=secret#/connect/x", frontend), "/app-next?assistant=claude", "One assistant choice survives sign-in");
+    for (const value of ["/app-next?assistant=Claude", "/app-next?assistant=claude&assistant=muse", "/app-next?assistant=" + "a".repeat(30), "/app-next?assistant=../app", "/app?assistant=claude"]) {
+      assert.ok(["/app-next", "/app"].includes(auth.safeFrontendReturn(value, frontend)), value);
+    }
     const safe = auth.safeFrontendReturn("/connect?client_id=client_1&state=kept&__clerk_handshake=secret&access_token=secret#secret", frontend);
     assert.equal(safe, "/connect?client_id=client_1&state=kept");
     assert.equal(auth.safeAuthReturn("/oauth/authorize?state=kept&__clerk_handshake=secret", base), "/oauth/authorize?state=kept", "Legacy same-origin flow stays compatible");

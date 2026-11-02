@@ -88,6 +88,40 @@ try {
     assert.equal((await call('claude','claim_request',{request_id:'x',consumer_id:'bad consumer'})).error.code,-32602);
     assert.equal((await call('cleo','get_collaboration_config',{agent_id:'claude'})).error.code,-32602);
   });
+  await check('tools/list exposes the complete hosted annotation and scope contract', async () => {
+    // Explicit public contract: a new or renamed tool must receive a reviewed classification.
+    const reads = ['get_started','connection_status','list_agents','check_inbox','get_job','get_collaboration_config','list_conversations','get_conversation','check_conversation_inbox','preview_requests'];
+    const receipts = ['acknowledge_results','acknowledge_conversation'];
+    const sends = ['send_job','answer_question','send_back','cancel_job','send_message'];
+    const work = ['get_next_job','submit_result','ask_question','give_up','claim_request','reply_to_request'];
+    const expected = Object.fromEntries([
+      ...reads.map(name => [name,{readOnlyHint:true,destructiveHint:false,openWorldHint:false}]),
+      ...receipts.map(name => [name,{readOnlyHint:false,destructiveHint:false,openWorldHint:false,idempotentHint:true}]),
+      ...[...sends,...work].map(name => [name,{readOnlyHint:false,destructiveHint:true,openWorldHint:false}]),
+    ]);
+    assert.equal(Object.keys(expected).length,23);
+    const tools = await catalog();
+    assert.deepEqual(Object.fromEntries(tools.map(tool => [tool.name,tool.annotations])),expected);
+    for (const [scope,names] of [['relay:read',[...reads,...receipts]],['relay:send',sends],['relay:work',work]]) {
+      const scoped = await catalog('cleo',[scope]);
+      assert.deepEqual(scoped.map(tool => tool.name).sort(),[...names].sort(),scope);
+      for (const tool of scoped) assert.deepEqual(tool.annotations,expected[tool.name],tool.name);
+    }
+    for (const name of ['check_inbox','get_job']) assert.doesNotMatch(tools.find(tool => tool.name===name).description,/also requeues expired leases/);
+  });
+  await check('self-hosted legacy reads advertise their existing maintenance side effects', async () => {
+    const hosted = Object.fromEntries((await catalog()).map(tool => [tool.name,tool.annotations]));
+    env.HOSTED = 'false';
+    try {
+      const tools = await catalog();
+      assert.deepEqual(tools.map(tool => tool.name).sort(),Object.keys(hosted).sort());
+      for (const tool of tools) {
+        const sweeps = ['check_inbox','get_job'].includes(tool.name);
+        assert.deepEqual(tool.annotations,sweeps ? {readOnlyHint:false,destructiveHint:true,openWorldHint:false} : hosted[tool.name],tool.name);
+        if (sweeps) assert.match(tool.description,/In self-hosted relays, also requeues expired leases and marks exhausted or overdue work failed or expired/);
+      }
+    } finally { env.HOSTED = 'true'; }
+  });
   await check('tool descriptions say what each tool returns; operating guidance stays in server instructions', async () => {
     const tools = await catalog(), description = name => tools.find(tool => tool.name === name).description;
     // Directory review rejects descriptions that direct the model to call
@@ -101,6 +135,34 @@ try {
     const { instructions } = (await rpc('cleo','initialize')).result;
     assert.match(instructions, /Use get_next_job to take one, follow its rules, and finish with submit_result, ask_question, or give_up\./);
     assert.match(instructions, /Refresh get_collaboration_config before starting or continuing work/);
+  });
+  await check('get_started is read-only and moves from adding a second assistant to a first handoff', async () => {
+    const tool = (await catalog('claude',['relay:read'])).find(item => item.name === 'get_started');
+    assert.ok(tool, 'Read-only grants can start setup');
+    assert.equal(tool.title,'Get started with Hitchhike');
+    assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
+    assert.equal(tool.inputSchema.additionalProperties,false);
+    assert.doesNotMatch(tool.description,/\b(?:then call|refresh|before continuing|instructions)\b/i);
+    // Scoped to setup so roster questions ("who can I hand work to?") still reach get_collaboration_config.
+    assert.match(tool.description,/^Setup summary for when the person asks to set up Hitchhike/);
+    assert.doesNotMatch(tool.description,/\b(?:hand work|send work|roster|permitted|collaborat)/i);
+    assert.match((await rpc('claude','initialize')).result.instructions,/When the person asks to set up Hitchhike, call get_started and follow its next step\./);
+    const rows = () => ['agents','pairing_codes','jobs','agent_collaboration','agent_onboarding'].map(table => sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n).join(',');
+    const before = rows();
+    sqlite.prepare('UPDATE agents SET last_seen_at=NULL').run();
+    let started = data(await call('claude','get_started',{},['relay:read']));
+    assert.deepEqual(started.connected_as,{id:'claude',name:'claude',assistant:'Another agent',can_ask_for_help:false,can_take_requests:false});
+    assert.equal(started.next_step.step,'add_another_assistant');
+    assert.ok(started.add_another.ways.length >= 5 && started.add_another.ways.every(way => way.step.includes('http://localhost:8787/app-next#/add') && way.status === 'not added'));
+    assert.deepEqual(started.other_assistants.map(other => [other.name, other.connected]),[['cleo',false],['other-worker',false]]);
+    assert.equal(started.schedules.this_app_can_schedule,true);
+    sqlite.prepare("UPDATE agents SET last_seen_at=? WHERE id='cleo'").run(Date.now());
+    started = data(await call('claude','get_started'));
+    assert.equal(started.connected_as.can_ask_for_help,true);
+    assert.equal(started.next_step.step,'try_first_handoff');assert.match(started.next_step.suggestion,/ask cleo for a second opinion/);
+    assert.deepEqual(started.other_assistants.find(other => other.name === 'cleo'),{name:'cleo',assistant:'Another agent',connected:true,id:'cleo',you_can_send_to_it:true});
+    assert.equal(rows(),before,'get_started creates no connections, codes, work or settings');
+    assert.equal((await call('claude','get_started',{agent_id:'cleo'})).error.code,-32602);
   });
   let sent, claimed;
   await check('a message creates one directed request and retries retain its conversation', async () => {

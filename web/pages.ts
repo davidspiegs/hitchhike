@@ -5,6 +5,7 @@ import { privacyHtml } from "../src/privacy";
 import { termsHtml } from "../src/terms";
 import { CONSENT_CSS, consentBrand } from "../src/consent-ui";
 import { publicDocsPages } from "./public-docs";
+import { PREVIEW_API } from "./preview-demo";
 export { publicDocsText } from "./public-docs";
 
 export type FrontendConfig = { apiUrl: string; frontendApi: string; publishableKey: string; siteUrl: string; assets?: Record<string, string> };
@@ -21,11 +22,18 @@ export function frontendPages(config: FrontendConfig): Record<string, string> {
       hosted: true, authConfigured: true, authProvider: "clerk", clerk: {...clerk,returnTo:"/app-next"},
       apiUrl: config.apiUrl, signInPath: "/sign-in", assets: config.assets,
     }),
-    "/sign-in": clerkSignInPage({ ...clerk, returnFromQuery: true, assets: config.assets }),
+    "/sign-in": clerkSignInPage({ ...clerk, returnTo: "/app-next", returnFromQuery: true, assets: config.assets }),
     "/connect": connectPage(clerk, config.assets),
     "/privacy": privacyHtml({ indexable: true }),
     "/terms": termsHtml(),
   };
+}
+
+/** Vercel previews have no API or sign-in, so their /app-next runs on the in-page
+ * sample workspace in web/preview-demo.ts (loaded first, from demoScript). */
+export function previewWorkspacePage(config: FrontendConfig, demoScript: string): string {
+  return workspaceHtml("Hitchhike", { hosted: true, authConfigured: true, apiUrl: PREVIEW_API, signInPath: "/sign-in", assets: config.assets })
+    .replace("<head>", `<head><script src="${demoScript}"></script>`);
 }
 
 function connectPage(clerk: ClerkUiConfig, assets?: Record<string, string>): string {

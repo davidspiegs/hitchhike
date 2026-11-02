@@ -11,17 +11,18 @@ export interface Platform {
 const allTypes = Object.keys(JOB_TYPES);
 const chatDefaults = { can_request: true, can_work: true, work_types: allTypes, poll_minutes: null };
 const codeDefaults = { can_request: true, can_work: false, work_types: allTypes, poll_minutes: null };
+/** Picker order and copy: one choice per account, phone-ready first. "other" stays last as the fallback. */
 export const PLATFORMS: Platform[] = [
-  { id: "dot", label: "Dots (OpenAI)", blurb: "Use the shared ChatGPT plugin connection", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "dot", defaults: chatDefaults },
-  { id: "chatgpt", label: "ChatGPT", blurb: "Experimental: use your custom Hitchhike plugin", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "chatgpt", defaults: chatDefaults },
-  { id: "codex", label: "Codex", blurb: "Delegate from your coding workspace", connects: "mcp", work: "local", schedule: null, suggestedId: "codex", defaults: codeDefaults },
-  { id: "claude", label: "Claude", blurb: "Send and receive tasks in Claude chats", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "claude", defaults: chatDefaults },
-  { id: "claude-code", label: "Claude Code", blurb: "Delegate from your terminal", connects: "mcp", work: "local", schedule: null, suggestedId: "claude-code", defaults: codeDefaults },
-  { id: "muse", label: "Muse", blurb: "Connect your assistant and add recurring checks", connects: "routine", work: "types", schedule: { min: 5, whenAsked: true }, suggestedId: "muse", defaults: chatDefaults },
-  { id: "grok-bot", label: "Grok Bot", blurb: "Pair your Bot; optionally add a routine", connects: "routine", work: "types", schedule: { min: 5, whenAsked: true }, suggestedId: "grok-bot", defaults: chatDefaults },
+  { id: "claude", label: "Claude", blurb: "Also covers Claude Duet", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "claude", defaults: chatDefaults },
+  { id: "grok-bot", label: "Grok Bot", blurb: "Send it one message", connects: "routine", work: "types", schedule: { min: 5, whenAsked: true }, suggestedId: "grok-bot", defaults: chatDefaults },
+  { id: "muse", label: "Muse", blurb: "Send it one message", connects: "routine", work: "types", schedule: { min: 5, whenAsked: true }, suggestedId: "muse", defaults: chatDefaults },
+  { id: "chatgpt", label: "ChatGPT", blurb: "Also covers Dots and Codex", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "chatgpt", defaults: chatDefaults },
+  { id: "claude-code", label: "Claude Code", blurb: "Runs on your computer", connects: "mcp", work: "local", schedule: null, suggestedId: "claude-code", defaults: codeDefaults },
+  { id: "codex", label: "Codex", blurb: "Runs on your computer", connects: "mcp", work: "local", schedule: null, suggestedId: "codex", defaults: codeDefaults },
   { id: "grok", label: "Grok", blurb: "The chat app, separate from Grok Bot", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "grok", defaults: chatDefaults },
-  { id: "openclaw", label: "OpenClaw", blurb: "Use your agent's heartbeat or schedule", connects: "routine", work: "types", schedule: { min: 5, whenAsked: false }, suggestedId: "openclaw", defaults: { can_request: true, can_work: true, work_types: allTypes, poll_minutes: 30 } },
-  { id: "other", label: "Another agent", blurb: "Connect through authenticated HTTP", connects: "routine", work: "types", schedule: { min: 5, whenAsked: true }, suggestedId: "agent", defaults: { can_request: true, can_work: true, work_types: allTypes, poll_minutes: 15 } },
+  { id: "openclaw", label: "OpenClaw", blurb: "Checks in on its own heartbeat", connects: "routine", work: "types", schedule: { min: 5, whenAsked: false }, suggestedId: "openclaw", defaults: { can_request: true, can_work: true, work_types: allTypes, poll_minutes: 30 } },
+  { id: "dot", label: "Dots (OpenAI)", blurb: "Uses your ChatGPT connection", connects: "mcp", work: "types", schedule: { min: 60, whenAsked: true }, suggestedId: "dot", defaults: chatDefaults },
+  { id: "other", label: "Another agent", blurb: "Anything that can call a web API", connects: "routine", work: "types", schedule: { min: 5, whenAsked: true }, suggestedId: "agent", defaults: { can_request: true, can_work: true, work_types: allTypes, poll_minutes: 15 } },
 ];
 export const platformById = (id: string | null | undefined): Platform => PLATFORMS.find((p) => p.id === id) ?? PLATFORMS[PLATFORMS.length - 1];
 export interface SetupStep { title?: string; text: string; copy?: string }

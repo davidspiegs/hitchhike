@@ -470,9 +470,9 @@ await check('dashboard sends bearer, CSRF and idempotency to absolute API withou
   assert.equal(calls[0][1].headers['Idempotency-Key'], 'fixture-idempotency');
 });
 
-await check('sign-in defaults to /app and uses only public Clerk configuration', async () => {
+await check('sign-in defaults to /app-next and uses only public Clerk configuration', async () => {
   const b = browser(); b.run(inline(html['sign-in'])[0]); await b.window.AgentConnectAuth.ready;
-  assert.equal(b.window.AgentConnectAuth.returnTo, '/app');
+  assert.equal(b.window.AgentConnectAuth.returnTo, '/app-next');
   assert.equal(b.window.AgentConnectAuth.apiUrl, 'https://api.example.test');
   assert.equal(b.appended[1].src, 'https://clerk.example.test/npm/@clerk/clerk-js@6/dist/clerk.browser.js');
   assert.equal(b.appended[1].nonce, undefined);
@@ -492,10 +492,14 @@ await check('guest sign-in releases its placeholder when Clerk renders controls'
 await check('sign-in preserves OAuth continuation but strips Clerk transport and rejects ambiguous/external returns', async () => {
   const values = [
     ['/connect?client_id=fixture&state=kept&__clerk_handshake=discard', '/connect?client_id=fixture&state=kept'],
-    ['/connect?client_id=one&client_id=two', '/app'],
-    ['https://evil.example/connect?state=no', '/app'],
+    ['/connect?client_id=one&client_id=two', '/app-next'],
+    ['https://evil.example/connect?state=no', '/app-next'],
     ['/app?token=no#secret', '/app'],
-    ['/auth/logout', '/app'],
+    ['/auth/logout', '/app-next'],
+    ['/app-next?assistant=grok-bot&__clerk_handshake=discard#/agents', '/app-next?assistant=grok-bot'],
+    ['/app-next?assistant=grok-bot&assistant=muse', '/app-next'],
+    ['/app-next?assistant=%3Cscript%3E', '/app-next'],
+    ['/app?assistant=claude', '/app'],
   ];
   for (const [value, expected] of values) {
     const b = browser({ query: '?return_to=' + encodeURIComponent(value) });
@@ -774,6 +778,34 @@ await check('unexpected callback origin is blocked and consent controls recover'
   assert.equal(b.node('auth-error').hidden, false);
   assert.match(b.node('auth-error').textContent, /unexpected redirect/);
   assert.ok(b.buttons.every((button) => !button.disabled));
+});
+
+await check('only preview builds without an API run the workspace on in-page sample data', async () => {
+  assert.doesNotMatch(html['app-next'], /preview-workspace\.|preview\.hitchhike\.invalid/, 'Builds outside Vercel previews keep the signed-in workspace');
+  const previewRoot = await mkdtemp(join(tmpdir(), 'hitchhike-preview-build-'));
+  try {
+    buildFrontend(previewRoot, { ...testEnv, VERCEL_ENV: 'preview' });
+    const page = await readFile(join(previewRoot, 'web/dist/app-next/index.html'), 'utf8');
+    const script = page.match(/<head><script src="(\/_hitchhike-assets\/preview-workspace\.[0-9a-f]{16}\.js)"><\/script>/)?.[1];
+    assert.ok(script, 'The sample workspace loads before the workspace script');
+    assert.match(page, /data-api-url="https:\/\/preview\.hitchhike\.invalid"/);
+    assert.doesNotMatch(page, /clerk\.browser\.js|data-auth-provider="clerk"/);
+    const source = await readFile(join(previewRoot, 'web/dist', script), 'utf8');
+    const store = new Map(), listeners = {};
+    const sandbox = { localStorage: { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) }, location: { href: 'https://preview.example.test/app-next', pathname: '/app-next' },
+      crypto: { getRandomValues: values => values.fill(7) }, setTimeout: callback => { callback(); return 1; }, Response, Request, URL, document: { addEventListener: (event, handler) => { listeners[event] = handler; } } };
+    sandbox.window = sandbox; sandbox.fetch = async () => { throw new Error('Preview sample data must not reach the network'); };
+    new Script(source).runInContext(createContext(sandbox));
+    const call = async (path, init) => (await sandbox.window.fetch('https://preview.hitchhike.invalid' + path, init)).json();
+    assert.equal((await call('/auth/session')).authenticated, true);
+    assert.deepEqual((await call('/v1/admin/overview')).agents, []);
+    await call('/v1/admin/agents', { method: 'POST', body: JSON.stringify({ id: 'claude', name: 'Claude', platform: 'claude', can_request: true, can_work: true }) });
+    const { guide } = await call('/v1/admin/agents/claude/setup?surface=chat');
+    assert.ok(guide.steps.some(step => step.copy === 'https://api.hitchhike.dev/mcp/connections/claude'));
+    assert.equal((await call('/v1/agents/claude/collaboration', { method: 'PUT', body: JSON.stringify({ expected_version: 4, purpose: 'x' }) })).error.code, 'configuration_changed');
+    assert.equal((await call('/v1/admin/overview')).agents[0].last_seen_at, null);
+    await assert.rejects(sandbox.window.fetch('https://api.example.test/v1/me'), /must not reach the network/);
+  } finally { rmSync(previewRoot, { recursive: true, force: true }); }
 });
 
 await check('landing prompts preserve drafts and report clipboard outcomes', async () => {

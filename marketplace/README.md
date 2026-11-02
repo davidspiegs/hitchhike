@@ -1,14 +1,22 @@
 # Directory listings
 
-How Hitchhike gets listed in the OpenAI, Anthropic and xAI directories: what each one requires, what Hitchhike already has, what is missing, and what only the operator can do. Requirements were read from the official pages on October 30, 2026. Directories change often, so recheck a requirement before relying on it.
+OpenAI approval is the current priority. This runbook separates installable packages from directory review readiness. OpenAI preparation was updated November 1, 2026; the Anthropic and xAI notes below retain the October 30 research and must be rechecked before those submissions.
+
+Release audit baseline (November 1, 2026) and prepared candidate:
+
+- At the audit baseline, production reported release **v0.1.3**. These version observations are dated evidence; verify current Worker and frontend deployments before claiming a change is live.
+- At that baseline, the public repository contained the installable plugin from release **v0.1.3**, public commit `a695f3b`, with plugin manifest version **0.1.0**. Public-install observations below refer to this baseline.
+- The prepared source package is plugin **0.1.1**, with corrected annotations and reproducible OpenAI cases. It is an **OpenAI submission candidate, not submitted or approved**. Actual host tests and a demo recording remain; no recording URL is ready.
+- Intended publisher: **David Spiegel**, subject to platform identity verification. Availability: **all available countries**, represented by `publication.countries: []`. The package declares no purchases or payment processing.
+
 
 | Directory | Path | Repo-side status |
 |---|---|---|
-| OpenAI plugin directory (ChatGPT and Codex) | ZIP upload at [platform.openai.com/plugins](https://platform.openai.com/plugins) | Package ready in `plugins/hitchhike` |
+| OpenAI plugin directory (ChatGPT and Codex) | ZIP upload at [platform.openai.com/plugins](https://platform.openai.com/plugins) | Plugin 0.1.1 in preparation; reviewer access, host tests, demo and portal checks remain |
 | Claude Connectors Directory | MCP connector at [claude.ai/directory/manage](https://claude.ai/directory/manage) | Copy ready below |
-| Claude plugin directory (claude.ai, Cowork, Claude Code) | Plugin bundle at [claude.ai/directory/manage](https://claude.ai/directory/manage), from the public GitHub repo | Plugin ready; must reach the public repo first |
-| Claude Code, self-distributed | `/plugin marketplace add davidspiegs/hitchhike` | Ready once in the public repo; no review |
-| Codex, self-distributed | `codex plugin marketplace add davidspiegs/hitchhike` | Ready once in the public repo; no review |
+| Claude plugin directory (claude.ai, Cowork, Claude Code) | Plugin bundle at [claude.ai/directory/manage](https://claude.ai/directory/manage), from the public GitHub repo | Public plugin 0.1.0 exists; updated 0.1.1 is unpublished |
+| Claude Code, self-distributed | `/plugin marketplace add davidspiegs/hitchhike` | Public plugin 0.1.0 installs; self-distribution is not directory approval |
+| Codex, self-distributed | `codex plugin marketplace add davidspiegs/hitchhike` | Public plugin 0.1.0 installs; self-distribution is not directory approval |
 | SpaceXSI Marketplace (Grok Bot and Cursor; Grok chat "coming soon") | Form at [x.ai/bot/marketplace/submit-a-plugin](https://x.ai/bot/marketplace/submit-a-plugin) | Copy ready below |
 | Grok Build plugin catalog | Pull request to [xai-org/plugin-marketplace](https://github.com/xai-org/plugin-marketplace) | Entry drafted below |
 | Grok chat connectors (grok.com) | None. Its catalog lists only connectors maintained by xAI ([docs](https://docs.x.ai/grok/connectors)) | Nothing to build |
@@ -25,7 +33,7 @@ Anthropic's own Claude Code marketplace, `claude-plugins-official`, "doesn't tak
 - **`.claude-plugin/marketplace.json`** and **`.agents/plugins/marketplace.json`**, the Claude Code and Codex marketplaces that point at that folder.
 - **`marketplace/icons/`**: square SVG masters built from `web/landing/assets/hitchhike-bus-mark.svg` without redrawing it, plus PNG exports from 16 to 1024px. The white tile matches the bus artwork, which was drawn for a light background. Sizes 16 to 48 use `hitchhike-icon-small.svg`, which crops tighter so the bus stays readable. To regenerate: `rsvg-convert -w <size> -h <size> marketplace/icons/hitchhike-icon.svg -o marketplace/icons/hitchhike-icon-<size>.png`.
 - **`GET /.well-known/openai-apps-challenge`** returns the `OPENAI_APPS_CHALLENGE` value as plain text, or 404 when it isn't set. OpenAI checks it to verify the MCP domain.
-- **Tool annotations.** Every tool now states `readOnlyHint`, `destructiveHint` and `openWorldHint`, and the `Tool` type requires all three. Values didn't change, and `openWorldHint` is `false` because tools only reach the owner's own workspace.
+- **Tool annotations.** The prepared hosted catalog has 23 tools: 10 reads, 2 additive acknowledgment writes, and 11 destructive/irreversible operations. Ten earlier write classifications changed to destructive; `cancel_job` was already destructive. All destinations remain bounded to the owner's workspace (`openWorldHint:false`). Self-hosted `check_inbox` and `get_job` also advertise their existing maintenance effects. See the [annotation audit](openai-annotation-audit.md); these corrections still need deployment verification.
 
 Checks:
 
@@ -34,7 +42,7 @@ npm run test:marketplace
 claude plugin validate plugins/hitchhike --strict --profile directory
 ```
 
-Both passed with nothing to report when these files were added. A test install into isolated Claude Code and Codex homes registered `https://api.hitchhike.dev/mcp`, and both reported that it needs authentication. Sign-in wasn't attempted.
+The initial Claude directory validation and isolated Claude Code/Codex installs passed for the earlier package; those installs only established registration and the need for authentication. Current preparation passes `test:marketplace` (11 checks), `test:mcp-conversations` (14 checks, including serialized annotations and scope filtering), and typecheck. Rerun validators against the exact final package. These local checks do not establish reviewer login, host execution or directory approval.
 
 ## OpenAI: plugin directory for ChatGPT and Codex
 
@@ -42,24 +50,24 @@ ChatGPT and Codex share one directory, so one submission covers both ([plugins o
 
 | Requirement | Source | Hitchhike |
 |---|---|---|
-| ZIP with a root `plugin.json` (Agent Plugins 1.0.0) and `mcp.json`; OpenAI fields under `extensions.com.openai` | [Submission](https://developers.openai.com/plugins/deploy/submission) | ✅ `plugins/hitchhike` |
+| ZIP with a root `plugin.json` (Agent Plugins 1.0.0) and `mcp.json`; OpenAI fields under `extensions.com.openai` | [Submission](https://developers.openai.com/plugins/deploy/submission) | Draft source in `plugins/hitchhike`; final archive awaits review materials and inspection |
 | Display name and subtitle ≤ 30 characters; long description ≤ 4,000; up to 3 starter prompts ≤ 128 characters with no @mentions; a category | [Submission field reference](https://developers.openai.com/plugins/deploy/submission) | ✅ Checked by `test:marketplace` |
 | HTTPS website, support, privacy and terms URLs, identifying the same publisher as the submission | [Submission](https://developers.openai.com/plugins/deploy/submission) | ⚠️ Support goes to GitHub issues, which are public |
 | Square icon, PNG/JPEG/WebP/SVG, 48–4096px, ≤ 5 MiB; `brandColor` ≥ 2:1 against white, dark ≥ 2:1 against `#212121` | [Submission](https://developers.openai.com/plugins/deploy/submission) | ✅ `#EC5C20` measures 3.43:1 and 4.69:1 |
-| OAuth 2.1 with S256 PKCE, protected-resource metadata or a `WWW-Authenticate` challenge, and authorization-server metadata. CIMD preferred; DCR supported | [Authentication](https://developers.openai.com/plugins/build/auth) | ✅ Live: 401 challenge, S256 and DCR. CIMD is merged (#17) and goes live with the next Worker deploy |
+| OAuth 2.1 with S256 PKCE, protected-resource metadata or a `WWW-Authenticate` challenge, and authorization-server metadata. CIMD preferred; DCR supported | [Authentication](https://developers.openai.com/plugins/build/auth) | v0.1.3 baseline advertises the 401 challenge, S256, DCR and CIMD. Complete reviewer OAuth on the exact submitted deployment |
 | Redirect: `https://chatgpt.com/connector_platform_oauth_redirect` when the server returns RFC 9207 `iss`, otherwise a per-callback URI | [Authentication](https://developers.openai.com/plugins/build/auth) | ✅ Advertises and returns `iss`. Nothing to allowlist: DCR accepts any HTTPS redirect, and CIMD accepts redirects on the client document's own origin |
 | Domain verification: the exact token as plain text at `https://<mcp host>/.well-known/openai-apps-challenge` | [Submission](https://developers.openai.com/plugins/deploy/submission) | ✅ Route added. Token pending: the operator sets it |
-| `readOnlyHint`, `destructiveHint` and `openWorldHint` as explicit booleans on every tool | [Guidelines](https://developers.openai.com/plugins/plugin-guidelines) | ✅ Every tool sets all three. ⚠️ See destructive sends below |
-| Exactly 5 positive and 3 negative test cases, a reviewer-accessible demo video, release notes | [Submission](https://developers.openai.com/plugins/deploy/submission) | ✅ Cases and notes in `plugin.json`. Video pending |
-| Demo account with a login and password: fully featured, with sample data, and no MFA, email or SMS codes, magic links or new sign-up | [Submission](https://developers.openai.com/plugins/deploy/submission), [guidelines](https://developers.openai.com/plugins/plugin-guidelines) | ❌ Not created. Sign-in uses Clerk; see Shared gaps |
-| Publish under a verified individual or business name; EU-data-residency projects can't submit MCP plugins | [Review requirements](https://developers.openai.com/plugins/deploy/app-review) | ❌ Operator step |
+| `readOnlyHint`, `destructiveHint` and `openWorldHint` as explicit booleans on every tool | [Guidelines](https://developers.openai.com/plugins/plugin-guidelines) | All 23 prepared tools are explicitly classified; inspect the deployed catalog after release |
+| Exactly 5 positive and 3 negative test cases, a reviewer-accessible demo video, release notes | [Submission](https://developers.openai.com/plugins/deploy/submission) | Revised cases and release notes are drafted. Actual host runs and a playable demo recording remain |
+| Demo account with a login and password: fully featured, with sample data, and no MFA, email or SMS codes, magic links or new sign-up | [Submission](https://developers.openai.com/plugins/deploy/submission), [guidelines](https://developers.openai.com/plugins/plugin-guidelines) | Dedicated account bootstrap is being prepared; fresh-browser password login, sample data and host access still require evidence |
+| Publish under a verified individual or business name; EU-data-residency projects can't submit MCP plugins | [Review requirements](https://developers.openai.com/plugins/deploy/app-review) | Intended verified individual: David Spiegel. Platform identity verification remains an operator step |
 | Privacy policy covering data categories, purposes, recipients, retention and controls | [Guidelines](https://developers.openai.com/plugins/plugin-guidelines) | ✅ `/privacy` covers these, including PostHog and Vercel Analytics |
 | Review timeline, fees | Not stated. After publishing, people find the plugin by direct link or name search; featured placement is OpenAI's choice ([review requirements](https://developers.openai.com/plugins/deploy/app-review)) | — |
 
 OpenAI-specific gaps and risks:
 
-1. **Destructive sends.** The guidelines ask for `destructiveHint: true` on "irreversible sends". Hitchhike marks `send_job`, `send_message`, `reply_to_request` and similar tools as additive (`false`), which is the MCP meaning; only `cancel_job` is destructive. The automated scan may flag them, and findings can be appealed. Flipping them would add a confirmation to every send in Claude, which affects unattended runs, so it is a product decision rather than a listing fix.
-2. **"Unofficial connectors… pass-through intermediary software layers" can't be approved** ([guidelines](https://developers.openai.com/plugins/plugin-guidelines)). Hitchhike is its own workspace service and calls no third-party API for the user, and the listing copy says so. Expect a reviewer to look closely all the same.
+1. **Corrected action classifications need release verification.** The prepared server marks irreversible sends, result/revision changes, claims and cancellation destructive. The two acknowledgment tools remain non-destructive because they add receipt state while preserving content. See the [tool-by-tool audit](openai-annotation-audit.md). Host confirmation behavior must be tested; labels do not guarantee a particular UI or grant permission.
+2. **Service ownership and scope.** The guidelines restrict unofficial pass-through intermediaries. Hitchhike owns its workspace, queues, permissions and durable conversation history. Optional owner-configured activation can call a supported provider API, so do not claim that no third-party API is ever called. Describe the exact submitted deployment and its limitations accurately.
 3. **The name is a single dictionary word.** The guidelines discourage these unless the word is clearly tied to the brand; `hitchhike.dev` is the tie.
 4. **The MCP host can't change after publishing.** `https://api.hitchhike.dev/mcp` is permanent for this listing ([review requirements](https://developers.openai.com/plugins/deploy/app-review)).
 
@@ -70,9 +78,9 @@ Submit at [claude.ai/directory/manage](https://claude.ai/directory/manage) → *
 | Requirement | Source | Hitchhike |
 |---|---|---|
 | Remote server over HTTPS | [Submission](https://claude.com/docs/connectors/building/submission) | ✅ |
-| Every tool has a `title` plus the applicable `readOnlyHint: true` or `destructiveHint: true` | [Review criteria](https://claude.com/docs/connectors/building/review-criteria) | ✅ All 22 tools have titles and explicit hints |
+| Every tool has a `title` plus the applicable `readOnlyHint: true` or `destructiveHint: true` | [Review criteria](https://claude.com/docs/connectors/building/review-criteria) | ✅ All 23 tools have titles and explicit hints |
 | Tool descriptions must not tell Claude to call tools the user didn't ask for, or to pull behavioural instructions from external sources | [Review criteria](https://claude.com/docs/connectors/building/review-criteria) | ✅ #17 reworded the two descriptions that read as instructions. See relay instructions below |
-| OAuth: DCR, CIMD (only if metadata advertises `client_id_metadata_document_supported: true`), or an Anthropic-held client. S256 required, 401 with `resource_metadata`, `resource` exactly matching the URL | [Authentication](https://claude.com/docs/connectors/building/authentication) | ✅ DCR, S256, exact `resource`, rotating refresh tokens with `invalid_grant`. CIMD, which the docs prefer for high traffic, is merged (#17) and goes live with the next Worker deploy |
+| OAuth: DCR, CIMD (only if metadata advertises `client_id_metadata_document_supported: true`), or an Anthropic-held client. S256 required, 401 with `resource_metadata`, `resource` exactly matching the URL | [Authentication](https://claude.com/docs/connectors/building/authentication) | ✅ DCR, S256, exact `resource`, rotating refresh tokens with `invalid_grant`. CIMD is in the v0.1.3 baseline; verify the exact live authentication flow before submission |
 | Callbacks: `https://claude.ai/api/mcp/auth_callback`; Claude Code uses loopback | [Authentication](https://claude.com/docs/connectors/building/authentication) | ✅ DCR and CIMD accept both. CIMD matches loopback callbacks on any port |
 | Listing: name ≤ 100 characters, one-liner ≤ 200, description ≤ 2,000, 1–5 categories, documentation URL, privacy URL, support contact, icon, permanent slug | [Submission](https://claude.com/docs/connectors/building/submission) | ✅ Copy below. The icon has no published pixel spec, so use `marketplace/icons/hitchhike-icon-1024.png` |
 | Reviewer test account: "credentials for a fully populated account" | [Submission](https://claude.com/docs/connectors/building/submission) | ❌ Same demo account as OpenAI |
@@ -84,7 +92,7 @@ Submit at [claude.ai/directory/manage](https://claude.ai/directory/manage) → *
 
 The same portal takes a **Plugin bundle**, submitted from a GitHub repo that the connected GitHub account can push to. The repo may be private during review but must be public before the listing goes live. The limit is 10 submissions per organization per day ([submit a plugin](https://claude.com/docs/plugins/submit)). Blocking checks are a README of at least 40 words outside code blocks and a license file or field ([pre-submission checklist](https://claude.com/docs/plugins/pre-submission-checklist)). `claude plugin validate --profile directory` runs the local subset of these checks; it asks for a square 512–2048px PNG icon under 2 MB.
 
-Hitchhike status: ✅ the plugin passes the strict directory profile. ❌ It isn't in the public repo yet: it reaches `davidspiegs/hitchhike` only through the release snapshot.
+Hitchhike status: the original plugin passed the strict directory profile and is already public in release v0.1.3. The updated plugin 0.1.1 remains unpublished; rerun validation before its release. Claude submission is deferred while OpenAI approval is prepared.
 
 ## xAI
 
@@ -98,7 +106,7 @@ The [submission form](https://x.ai/bot/marketplace/submit-a-plugin) takes an MCP
 
 Cursor says its catalog is curated: it works with "a small group of trusted partners" ([marketplace security](https://cursor.com/help/security-and-privacy/marketplace-security.md)). No timeline is published.
 
-Hitchhike status: ✅ MIT license, public privacy and terms pages, hosted MCP URL, square logo with a white plate. ⚠️ Accepting §3.1 constrains future pricing of the hosted service. ❌ Logotype URL: use the raw GitHub URL of `plugins/hitchhike/assets/icon.png` once the public repo has it.
+Hitchhike status: ✅ MIT license, public privacy and terms pages, hosted MCP URL, square logo with a white plate. ⚠️ Accepting §3.1 constrains future pricing of the hosted service. The icon is already in the public repository at `plugins/hitchhike/assets/icon.png`; verify the chosen raw URL before submitting.
 
 ### Grok Build plugin catalog
 
@@ -133,23 +141,24 @@ There is no third-party submission path. grok.com's connector docs describe buil
 - **First-time dead end.** A directory install uses the generic `https://api.hitchhike.dev/mcp`. New users can now create their first connection on the consent screen.
 - **Registration ceiling.** CIMD is supported, and the DCR cap counts only unclaimed registrations.
 
-Both need migration `0022` and a Worker deploy to go live. These remain, and they affect several directories:
+Migration `0022`, the #17 fixes and the later #19 security correction shipped before the recorded v0.1.3 baseline. Do not repeat the old migration/deploy checklist as if those changes were still pending. Remaining preparation includes:
 
-1. **Reviewer sign-in.** Both OpenAI and Anthropic need a username and password that work without MFA, email codes or magic links. Clerk must allow password sign-in for the reviewer account, without new-device email verification.
+1. **Reviewer sign-in and fixtures.** Verify a dedicated synthetic account can sign in from a fresh browser and complete OAuth without inaccessible challenges. Keep global authentication safeguards intact; any supported review exception must be scoped to this account. A protocol/API rehearsal is separate from a ChatGPT/Codex review-case run.
 2. **Support contact.** The only channels are a GitHub profile link (`/privacy`) and public GitHub issues (`/terms`). A support page or email address is safer for directories and keeps private details out of public issues.
 3. **Minor.** `serverInfo.name` is `agent-connector`, while the title is already "Hitchhike". Also, `https://hitchhike.dev/favicon.ico` returns 404; some directories fetch a site favicon.
 
 ## Reviewer demo account
 
-One seeded workspace serves OpenAI, Anthropic and xAI reviewers. Production gives new workspaces the conversation tools (`get_collaboration_config`, `send_message`, `check_conversation_inbox`, `preview_requests`, `claim_request`, `reply_to_request` and others). Its config sets `NEXT_RELEASE_DEFAULT_ENABLED` to `"true"`, unlike the `wrangler.hosted.jsonc` template. The OpenAI test cases name those tools, so leave them on in the demo workspace.
+Use a dedicated **OpenAI** review account and synthetic workspace. Keep conversation tools enabled: the cases use `get_collaboration_config`, `send_message`, `check_conversation_inbox`, `preview_requests`, `claim_request` and `reply_to_request`. Later marketplace reviews can reuse the fixture design after access and isolation are separately verified.
 
-- A password sign-in account, used only for reviews, with no real data.
-- Connection **ChatGPT**: can send and receive, may hand work to Research helper and accept work from it.
-- Connection **Research helper**: can send and receive, takes `research` and `review` work.
-- Seeded state. Create it by signing an MCP client, such as Claude Code, in to each connection in turn:
-  - a conversation in which ChatGPT asked Research helper about the launch checklist, with Research helper's completed answer not yet acknowledged by ChatGPT;
-  - two requests from Research helper to ChatGPT, waiting to be claimed. One is "Suggest three names for a team offsite"; the other should leave room for a budget question.
-- Reset the seeded requests after each review round.
+- A verified-email password account containing no real user data. Store its login/password only in private operator storage and secure portal reviewer fields.
+- **ChatGPT** and **Research helper** connections with send/receive permissions restricted to each other. Both support `task`, `research` and `review`; neither has a schedule, webhook or activation configured.
+- A completed, unacknowledged **OpenAI review: Launch checklist** conversation from ChatGPT to Research helper, with the synthetic three-item checklist answer.
+- Two queued requests from Research helper to ChatGPT: **OpenAI review: Offsite names** asks for three fictional offsite names; **OpenAI review: Offsite budget** deliberately omits its budget and expects a clarification question.
+- Use exact current fixture IDs in secure setup notes, or select the newest active matching title. Reset only while no host test or reviewer is active. Preserve earlier history and refuse unknown work rather than canceling it implicitly.
+- Pending fixtures expire after the normal three-day default. Verify readiness and refresh fixtures before submission and subsequent review rounds; account availability alone is insufficient. No refresh automation is implied.
+
+A synthetic helper response verifies protocol behavior, not autonomous assistant execution. Record actual ChatGPT/Codex positive and negative case evidence separately, then capture the real demo.
 
 ## Listing copy
 
@@ -183,30 +192,25 @@ The OpenAI copy lives in `plugins/hitchhike/plugin.json`. The fields below are f
 
 ## Operator checklist
 
-Only the operator can do these. Do them in order: the listings scan the live server and read the public repo.
+Preparation can be assisted, but identity verification and legal attestations belong to the publisher. Complete review materials before uploading the final draft. Submission, approval and publication are separate milestones.
 
-**Before any submission**
+**Before OpenAI submission**
 
-1. Apply migration `0022` with `npx --no-install wrangler d1 migrations apply DB --remote --config wrangler.production.jsonc`. Then deploy the API Worker, so that CIMD, in-place first connections, the annotations and the challenge route go live. Check that Vercel has deployed `main` for the frontend.
-2. Publish to the public repo: `node scripts/release-snapshot.mjs --mirror ~/hitchhike-public --version v0.1.2`, then run the push commands it prints.
-3. In the [Clerk dashboard](https://dashboard.clerk.com), allow password sign-in. Create the reviewer account and seed it as described in Reviewer demo account.
-4. Record a short demo video covering the five positive test cases, and host it at an unlisted URL.
-5. Decide on destructive sends and the support contact.
+1. Finish and verify the dedicated review account, ordinary OAuth connection, bounded permissions and seeded fixtures. Do not weaken instance-wide authentication safeguards for the reviewer.
+2. Rehearse the five positive and three negative cases in the supported host, recording actual results. Honor confirmations required for irreversible actions. Resolve failures and reset synthetic fixtures while the account is idle.
+3. Record a real, short walkthrough with readable prompts and returned results. Host it at a reviewer-accessible URL, verify playback and permissions, and add `review.demo_recording_url` to the manifest. A script or screenshot is not a completed recording.
+4. Finalize the support contact and verify website, support, privacy and terms pages. Confirm publisher **David Spiegel**, all-country availability (`countries: []`) and the no-commerce declaration in the saved metadata.
+5. Release the approved server changes through the normal private deployment/public snapshot process, choosing the next actual repository release version rather than reusing v0.1.2. Verify the deployed code/catalog and public plugin 0.1.1 source. Rerun package checks on the exact final archive; do not publish private operating files or credentials.
 
 **OpenAI** ([submission guide](https://developers.openai.com/plugins/deploy/submission))
 
-1. Complete individual verification for the publishing name in the [OpenAI Platform organization settings](https://platform.openai.com/settings/organization/general). Use a project with global data residency.
-2. From `plugins/hitchhike`, run: `zip -r -X ~/Desktop/hitchhike-openai.zip plugin.json mcp.json skills assets README.md -x '*.DS_Store'`. The ZIP leaves out the Claude-only `.claude-plugin/` and `.mcp.json`.
-3. Open [platform.openai.com/plugins](https://platform.openai.com/plugins) → **Upload new or existing plugin**, choose the verified identity, and upload the ZIP.
-4. Under **MCPs → Connect**:
-   1. Copy the challenge token.
-   2. Set it on the API Worker: `npx wrangler secret put OPENAI_APPS_CHALLENGE --config wrangler.production.jsonc`.
-   3. Confirm `https://api.hitchhike.dev/.well-known/openai-apps-challenge` returns the token.
-   4. Verify, connect and sign in with the reviewer account.
-   5. Resolve the scan findings.
-5. Under **Review details**, add the demo video URL and the reviewer credentials.
-6. **Submit for review**. Accepting the attestations is your call.
-7. After approval, select **Publish**.
+1. Complete individual verification for **David Spiegel** in the [OpenAI Platform organization settings](https://platform.openai.com/settings/organization/general). Use a supported project with global data residency.
+2. After the materials above are complete, create and inspect a ZIP rooted at `plugin.json`, `mcp.json`, `skills/`, `assets/` and `README.md`. From `plugins/hitchhike`: `zip -r -X ~/Desktop/hitchhike-openai.zip plugin.json mcp.json skills assets README.md -x '*.DS_Store'`. Keep private reviewer credentials and app bindings out of the archive.
+3. Open [platform.openai.com/plugins](https://platform.openai.com/plugins) → **Upload new or existing plugin**, choose the intended verified identity, and upload the prepared ZIP as a draft. Inspect the imported listing, countries, review cases, release notes and demo URL.
+4. Under **MCPs → Connect**, copy the portal's exact challenge token, set `OPENAI_APPS_CHALLENGE` on the production API Worker, and confirm `https://api.hitchhike.dev/.well-known/openai-apps-challenge` returns it as plain text. Complete verification and OAuth with the review account. Resolve required scans and run saved-version review checks.
+5. Add the account login/password and precise connection/fixture instructions only in secure reviewer-access fields. Recheck fresh-browser access and usable sample data.
+6. The authorized publisher completes attestations and submits for review. Record the actual submitted state; a successful upload is not submission or approval.
+7. After approval, publish the approved release and verify its directory availability.
 
 **Claude Connectors Directory** ([submission guide](https://claude.com/docs/connectors/building/submission))
 
@@ -218,7 +222,7 @@ Only the operator can do these. Do them in order: the listings scan the live ser
 
 **Claude plugin directory** ([submission guide](https://claude.com/docs/plugins/submit))
 
-1. Once step 2 of "Before any submission" is done, go to [claude.ai/directory/manage](https://claude.ai/directory/manage) → **Submit new** → **Plugin bundle**.
+1. Once the intended plugin release is public, go to [claude.ai/directory/manage](https://claude.ai/directory/manage) → **Submit new** → **Plugin bundle**.
 2. Connect GitHub with push access to `davidspiegs/hitchhike`, and choose the `plugins/hitchhike` folder.
 3. Answer the data questions and submit.
 

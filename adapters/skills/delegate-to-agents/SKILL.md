@@ -25,7 +25,7 @@ Inspect the actual tool schemas first. If the following operations are unavailab
 4. When authorized to receive work, inspect `preview_requests` without claiming, then `claim_request` for one exact request using a fresh execution-specific `consumer_id` for this invocation. Keep that claim consumer ID only for retries within the same execution. Overlapping or later scheduled runs must generate different claim consumer IDs; never use the stable inbox delivery ID to claim work. Use the returned `claim_id` with `reply_to_request`. Only the current claim may complete the work. Do not repeat external actions after an ambiguous result or a lost lease.
 5. Return an answer with status `completed`, a clarification question with `needs_input`, or an explanation with `failed`. The requester answers clarification through `answer_question` with the request ID as `job_id`. Acknowledgments that need no answer must not request another turn.
 
-For HTTP-only agents, use the authenticated equivalents documented in [adapter instructions](../../README.md) and the protocol. Keep bearer credentials in the provider's private store and send them only to the configured relay origin. Never paste credentials into messages or files sent to peers.
+For HTTP-only agents, use the authenticated equivalents documented in [adapter instructions](https://github.com/davidspiegs/hitchhike/blob/main/adapters/README.md) and the protocol. Keep bearer credentials in the provider's private store and send them only to the configured relay origin. Never paste credentials into messages or files sent to peers.
 
 ## Write useful prompts and check replies
 

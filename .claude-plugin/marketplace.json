@@ -12,7 +12,7 @@
       "name": "hitchhike",
       "source": "./plugins/hitchhike",
       "description": "Let Claude Code send tasks, prompts and follow-ups to your other AI assistants (ChatGPT, Codex, Claude, Grok, Grok Bot, Muse) through Hitchhike, and pick up work they send back.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "David Spiegel",
         "url": "https://github.com/davidspiegs"

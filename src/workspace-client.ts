@@ -30,10 +30,10 @@ export const WORKSPACE_JS = String.raw`
       } catch {
       }
     } };
+    // Per-tab timestamps only (never codes): when this tab last issued a pairing code.
+    const tabMemory = { get(k) { try { return sessionStorage.getItem(k); } catch { return null; } }, set(k, v) { try { sessionStorage.setItem(k, v); } catch {} } };
     let token = HOSTED ? null : memory.get(KEY), csrf = null, session = null, overview = null, configs = /* @__PURE__ */ new Map(), guides = /* @__PURE__ */ new Map(), pairing = /* @__PURE__ */ new Map();
     const contextDrafts = new Map();
-    const instructionDrafts = new Map();
-    const instructionSaves = new Map();
     let heldDrafts = null;
     const configFetchedAt = new Map();
     const configRequests = new Map();
@@ -56,18 +56,29 @@ export const WORKSPACE_JS = String.raw`
       pollRounds = pollRounds.filter(at => at > now - POLL_WINDOW);
       return Math.max(nextPollAt || now + POLL_DELAYS[0], readPauseUntil, pollRounds.length >= POLL_ROUNDS ? pollRounds[0] + POLL_WINDOW : 0);
     }
-    function updateRefreshStatus() {
-      const text = $("#refresh-status-text"), button = $("#refresh-now");
-      if (text) text.textContent = (lastUpdatedAt ? "Status updated " + ago(new Date(lastUpdatedAt).toISOString()) + ". " : "Status is ready. ") + (readPauseUntil > Date.now() ? "Automatic updates paused until " + date(readPauseUntil) + "." : "Next automatic check " + date(automaticDeadline()) + ".");
-      if (button) button.disabled = refreshing || readPauseUntil > Date.now();
-    }
-    function refreshStatus() {
-      return el("div", { class: "actions", id: "refresh-status" }, el("span", { class: "small muted", id: "refresh-status-text", role: "status" }), btn("Check now", () => refresh({ manual: true }), true, { id: "refresh-now" }));
-    }
-    let epoch = 0, routeEpoch = 0, timer = null, signedIn = false, loading = null, refreshing = false, toastTimer = null, dirty = false;
+    let epoch = 0, routeEpoch = 0, timer = null, signedIn = false, loading = null, refreshing = false, toastTimer = null, dirty = false, moreOpen = false;
     const OPEN = /* @__PURE__ */ new Set(["queued", "claimed", "input_required", "needs_approval"]);
-    const TYPE_LABELS = { task: "General tasks", research: "Research", summarize: "Summaries", monitor: "Monitoring", digest: "Digests", review: "Review and critique", build: "Building and changes" };
+    const TYPE_LABELS = { task: "General tasks", research: "Research", summarize: "Summaries", monitor: "Monitoring", digest: "Digests", review: "Reviews", build: "Building and changes" };
     const statusNames = { queued: "Waiting for pickup", claimed: "Picked up", input_required: "Needs clarification", needs_approval: "Needs your approval", completed: "Reply ready", failed: "Failed", canceled: "Stopped", expired: "Expired" };
+    // One choice per account: apps that share a sign-in share one connection.
+    const LABELS = { claude: "Claude", "grok-bot": "Grok Bot", muse: "Muse", chatgpt: "ChatGPT", dot: "Dots", "claude-code": "Claude Code", codex: "Codex", grok: "Grok", openclaw: "OpenClaw", other: "Another agent" };
+    const CHOICES = [
+      ["claude", "phone", "Also covers Claude Duet"], ["grok-bot", "phone", "Send it one message"], ["muse", "phone", "Send it one message"],
+      ["chatgpt", "computer", "Also covers Dots and Codex"], ["claude-code", "computer", "Runs on your computer"],
+      ["grok", "more", "The chat app, separate from Grok Bot"], ["openclaw", "more", "Checks in on its own heartbeat"], ["other", "more", "Anything that can call a web API"],
+    ];
+    const DESK_ORDER = ["claude", "chatgpt", "claude-code", "grok-bot", "muse"];
+    // [file, image size in a 40px tile]; 0 means the artwork is its own full-bleed tile.
+    const ART = { claude: ["claude.svg", 26], "grok-bot": ["grok-bot.svg", 28], muse: ["muse.svg", 28], chatgpt: ["chatgpt.svg", 24], dot: ["chatgpt.svg", 24], "claude-code": ["claude-code.png", 28], codex: ["codex.png", 0], grok: ["grok.png", 0], openclaw: ["openclaw.svg", 26] };
+    const COMPUTER = new Set(["chatgpt", "dot", "claude-code", "codex"]);
+    const OPENAI = new Set(["chatgpt", "dot"]);
+    const CODE = new Set(["claude-code", "codex"]);
+    const GOOD_AT = { claude: "Writing, research and planning", chatgpt: "Research, analysis and everyday questions", dot: "Research, analysis and everyday questions", "claude-code": "Code changes in your projects", codex: "Code changes and reviews", "grok-bot": "Quick research and keeping an eye on things", grok: "Quick research and current events", muse: "Everyday questions and ideas", openclaw: "Tasks on your own computer" };
+    const SCHEDULED = { muse: 10, "grok-bot": 10 };
+    // Today's requested-schedule defaults (defaultBackgroundSelection). Saved with the
+    // first settings write, because any saved version otherwise reads as "off".
+    const SCHEDULE_DEFAULT = { claude: 60, grok: 60, chatgpt: 60, ...SCHEDULED };
+    const INTERVALS = [5, 10, 15, 30, 60];
     function el(tag, attrs, ...kids) {
       const node = document.createElement(tag);
       for (const [key, value] of Object.entries(attrs || {})) {
@@ -81,29 +92,58 @@ export const WORKSPACE_JS = String.raw`
       for (const child of kids.flat(Infinity)) if (child !== null && child !== void 0 && child !== false) node.append(child.nodeType ? child : document.createTextNode(String(child)));
       return node;
     }
-    function icon(kind) {
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      svg.setAttribute("viewBox", "0 0 24 24");
-      svg.setAttribute("aria-hidden", "true");
-      if (kind === "arrow") svg.setAttribute("class", "chevron");
-      const paths = { arrow: "m9 5 7 7-7 7", back: "m14 6-6 6 6 6", plus: "M12 5v14M5 12h14", info: "M12 11v5m0-9v.1", check: "m7 12 3 3 7-7", agent: "M8 4h8M12 2v2M4 8h16v11H4zM8 12h.1M16 12h.1M9 16h6", clock: "M12 7v5l3 2" };
-      if (["info", "check", "clock"].includes(kind)) {
-        const circle = document.createElementNS(svg.namespaceURI, "circle");
-        circle.setAttribute("cx", "12");
-        circle.setAttribute("cy", "12");
-        circle.setAttribute("r", "9");
-        svg.append(circle);
+    const ICONS = {
+      chev: ["m8 5 5 5-5 5"], down: ["m5 8 5 5 5-5"], back: ["m12 4.5-5.5 5.5 5.5 5.5"], plus: ["M10 4.5v11M4.5 10h11"], check: ["m4.5 10.5 3.5 3.5 7.5-8"],
+      copy: [["rect", 7, 7, 10, 10, 2.2], "M13 7V5.2A2.2 2.2 0 0 0 10.8 3H5.2A2.2 2.2 0 0 0 3 5.2v5.6A2.2 2.2 0 0 0 5.2 13H7"],
+      share: ["M10 12.5V3.2M6.6 6.4 10 3l3.4 3.4", "M6.5 9H5.4A1.9 1.9 0 0 0 3.5 10.9v4.2A1.9 1.9 0 0 0 5.4 17h9.2a1.9 1.9 0 0 0 1.9-1.9v-4.2A1.9 1.9 0 0 0 14.6 9h-1.1"],
+      lock: [["rect", 4.5, 9, 11, 8, 2], "M7 9V6.8a3 3 0 0 1 6 0V9"], clock: [["circle", 10, 10, 7.2], "M10 6.2V10l2.6 1.6"],
+      phone: [["rect", 5.5, 2, 9, 16, 2.5], "M8.75 15h2.5"], computer: [["rect", 3.5, 4, 13, 9, 1.6], "M1.75 16h16.5"],
+      info: [["circle", 10, 10, 7.2], "M10 9.2v4.3M10 6.5v.1"], pencil: ["M4.5 15.5h2.7l7.6-7.6a1.9 1.9 0 0 0-2.7-2.7l-7.6 7.6z", "m11.2 6.1 2.7 2.7"], alert: ["M10 3.5 2.8 16h14.4z", "M10 8.5v3.2M10 13.9v.1"], person: [["circle", 10, 7, 3.2], "M3.8 16.5a6.2 6.2 0 0 1 12.4 0"],
+    };
+    function svg(name, cls) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      node.setAttribute("viewBox", "0 0 20 20");
+      node.setAttribute("class", "i" + (cls ? " " + cls : ""));
+      node.setAttribute("aria-hidden", "true");
+      for (const part of ICONS[name] || []) {
+        const shape = document.createElementNS(node.namespaceURI, typeof part === "string" ? "path" : part[0]);
+        if (typeof part === "string") shape.setAttribute("d", part);
+        else if (part[0] === "rect") ["x", "y", "width", "height", "rx"].forEach((key, i) => shape.setAttribute(key, String(part[i + 1])));
+        else ["cx", "cy", "r"].forEach((key, i) => shape.setAttribute(key, String(part[i + 1])));
+        node.append(shape);
       }
-      const path = document.createElementNS(svg.namespaceURI, "path");
-      path.setAttribute("d", paths[kind] || paths.agent);
-      svg.append(path);
-      return svg;
+      return node;
     }
-    function agentIcon(platform) {
-      const id = platform === "dot" ? "chatgpt" : platform;
-      const ext = { chatgpt: "svg", claude: "svg", muse: "svg", "grok-bot": "svg", codex: "png", "claude-code": "png", grok: "png" }[id];
-      const asset = ext && ASSETS["assets/agents/" + id + "." + ext];
-      return el("span", { class: "agent-icon " + (platform === "dot" || platform === "chatgpt" ? "dot" : platform.includes("claude") ? "claude" : "code"), "aria-hidden": "true" }, asset ? el("img", { src: asset, alt: "", width: "27", height: "27" }) : icon("agent"));
+    function setClass(node, name, on) {
+      const list = String(node.className || "").split(" ").filter(item => item && item !== name);
+      if (on) list.push(name);
+      node.className = list.join(" ");
+    }
+    function platformOf(id) { return overview?.platforms?.find(p => p.id === id) || null; }
+    function labelOf(id) { return LABELS[id] || platformOf(id)?.label || "Assistant"; }
+    function routine(a) { return (a?.connects || platformOf(a?.platform)?.connects) === "routine"; }
+    function isPhone() {
+      try { return !!window.matchMedia?.("(max-width: 899px), (pointer: coarse)")?.matches; } catch { return false; }
+    }
+    function tile(platform, size = "", name = "") {
+      const art = ART[platform], asset = art && ASSETS["assets/agents/" + art[0]];
+      const node = el("span", { class: (size === "mini" ? "mini" : "tile" + (size ? " " + size : "")) + (asset && !art[1] ? " full" : ""), "aria-hidden": "true" });
+      if (asset) {
+        const image = el("img", { src: asset, alt: "" });
+        if (art[1]) image.style.width = image.style.height = Math.round(art[1] * ({ lg: 1.3, xl: 1.84, mini: 0.66 }[size] || 1)) + "px";
+        node.append(image);
+      } else node.append(el("span", { class: "glyph" }, (name || labelOf(platform)).trim().charAt(0).toUpperCase() || "?"));
+      return node;
+    }
+    function busTile(size = "lg") {
+      const logo = ASSETS["assets/hitchhike-bus-logo.png"];
+      return el("span", { class: "tile " + size, "aria-hidden": "true" }, logo ? el("span", { class: "bus" }, el("img", { class: "art", src: logo, alt: "" })) : el("span", { class: "glyph" }, "H"));
+    }
+    function route2(left, right, done) {
+      return el("div", { class: "link" + (done ? " done" : ""), id: "setup-link", "aria-hidden": "true" }, left, el("span", { class: "track" }), right);
+    }
+    function rich(parts) {
+      return parts.map(part => Array.isArray(part) ? el("b", {}, part[0]) : part);
     }
     function btn(label, action, quiet = false, attrs = {}) {
       return el(typeof action === "string" ? "a" : "button", Object.assign({ class: "btn" + (quiet ? " quiet" : ""), ...typeof action === "string" ? { href: action } : { type: "button", onclick: action } }, attrs), label);
@@ -111,14 +151,17 @@ export const WORKSPACE_JS = String.raw`
     function head(title, description, action) {
       return el("header", { class: "page-head" }, el("div", {}, el("h1", {}, title), description && el("p", {}, description)), action && el("div", { class: "head-action" }, action));
     }
-    function back(href = "#/agents", text = "Your agents") {
-      return el("a", { class: "back", href }, icon("back"), text);
+    function back(href = "#/agents", text = "Your assistants") {
+      return el("a", { class: "back", href }, svg("back"), text);
+    }
+    function flowTop(href = "#/agents", label = "Your assistants") {
+      return [el("div", { class: "flowtop" }, el("a", { class: "ib", href, "aria-label": label }, svg("back"))), el("a", { class: "back deskback", href }, svg("back"), label)];
     }
     function foot(text) {
-      return el("p", { class: "footnote" }, icon("info"), text);
+      return el("p", { class: "footnote" }, svg("info"), text);
     }
     function note(title, text, action, tone = "") {
-      return el("section", { class: "notice " + tone }, icon("info"), el("div", {}, el("h2", {}, title), el("p", {}, text)), action);
+      return el("section", { class: "notice " + tone }, svg(tone === "error" ? "alert" : "info"), el("div", {}, el("h2", {}, title), el("p", {}, text)), action);
     }
     function state(text, tone = "") {
       return el("span", { class: "status " + tone }, text);
@@ -135,6 +178,9 @@ export const WORKSPACE_JS = String.raw`
       const seconds = Math.max(0, (Date.now() - Date.parse(value)) / 1e3);
       return seconds < 60 ? "just now" : seconds < 5400 ? Math.round(seconds / 60) + " min ago" : seconds < 129600 ? Math.round(seconds / 3600) + " h ago" : new Date(value).toLocaleDateString(void 0, { month: "short", day: "numeric" });
     }
+    function every(minutes) {
+      return minutes === 60 ? "hour" : minutes % 60 === 0 ? minutes / 60 + " hours" : minutes + " minutes";
+    }
     function who(id) {
       return id === "owner" ? "You" : overview?.agents.find((a) => a.id === id)?.name || id || "Assistant";
     }
@@ -147,7 +193,8 @@ export const WORKSPACE_JS = String.raw`
       $("#toast").hidden = false;
       toastTimer = setTimeout(() => $("#toast").hidden = true, 6e3);
     }
-    async function copy(text, button, container) {
+    async function copyText(text, button, fallback, done = "Copied") {
+      const label = $("span", button), before = label?.textContent;
       try {
         if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
         else {
@@ -158,40 +205,34 @@ export const WORKSPACE_JS = String.raw`
           area.remove();
           if (!ok) throw new Error("clipboard");
         }
-        button.textContent = "Copied";
+        // Icon-only buttons keep their icon; the toast confirms instead.
+        if (label) label.textContent = done; else toast(done + ".");
         setTimeout(() => {
-          if (button.isConnected) button.textContent = "Copy";
+          if (label && button.isConnected) label.textContent = before;
         }, 2e3);
+        return true;
       } catch {
-        const disclosure = $("details", container);
-        if (disclosure) disclosure.open = true;
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents($("pre", container));
-        selection.removeAllRanges();
-        selection.addRange(range);
-        toast("Copy is unavailable. The text is selected; use your device’s Copy action.");
+        if (fallback) {
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(fallback);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        toast("Copy isn’t available here. The text is selected, so use your device’s Copy action.");
+        return false;
       }
     }
-    function setupCopyLabel(text) {
-      const value = text.trim();
-      if (/^https?:\/\/\S+$/.test(value)) return "MCP server URL";
-      if (/^(?:claude|codex|npx|npm|uvx|curl|python3?|node)(?:\s|$)/.test(value)) return "Setup command";
-      return "Copy for your assistant";
+    async function shareText(payload, button, fallback, copyValue) {
+      if (navigator.share) {
+        try { await navigator.share(payload); return; } catch (e) { if (e?.name === "AbortError") return; }
+      }
+      await copyText(copyValue, button, fallback);
     }
-    function copybox(label, text, prepare) {
-      const box = el("div", { class: "copybox" }), button = btn("Copy", async () => {
-        if (prepare) {
-          button.disabled = true;
-          try { text = await prepare(); content.textContent = text; }
-          catch (e) { toast(e.message || "The instructions could not be refreshed. Your draft is kept here."); return; }
-          finally { button.disabled = false; }
-        }
-        await copy(text, button, box);
-      }, true);
-      const content = el("pre", { tabindex: "0" }, text);
-      box.append(el("div", { class: "copytop" }, el("strong", {}, label), button), text.length > 500 ? el("details", {}, el("summary", {}, "Preview instructions"), content) : content);
-      return box;
+    function copybox(label, text) {
+      const content = el("pre", { tabindex: "0" }, text), button = el("button", { type: "button", class: "btn sm" }, svg("copy"), el("span", {}, "Copy"));
+      button.addEventListener("click", () => copyText(text, button, content));
+      return el("div", { class: "copybox" }, el("div", { class: "copytop" }, el("strong", {}, label), button), content);
     }
     async function api(path, options = {}) {
       const generation = epoch;
@@ -248,7 +289,10 @@ export const WORKSPACE_JS = String.raw`
         overview = result;
         syncPollScope();
         const r = parseRoute(), target = result.agents.find(a => a.id === r.id && ["setup", "agents"].includes(r.page));
-        const stale = target || result.agents.filter(a => !configs.has(a.id) || Date.now() - (configFetchedAt.get(a.id) || 0) >= CONFIG_MAX_AGE).sort((a, b) => (configFetchedAt.get(a.id) || 0) - (configFetchedAt.get(b.id) || 0))[0];
+        const outdated = a => !configs.has(a.id) || Date.now() - (configFetchedAt.get(a.id) || 0) >= CONFIG_MAX_AGE;
+        // Home's first-handoff card reads the sender's roster, so fetch that one first.
+        const sender = !target && r.page === "agents" && !r.id && result.agents.filter(a => a.last_seen_at).length > 1 ? handoffSenders(result.agents).find(outdated) : null;
+        const stale = target || sender || result.agents.filter(a => !configs.has(a.id) || Date.now() - (configFetchedAt.get(a.id) || 0) >= CONFIG_MAX_AGE).sort((a, b) => (configFetchedAt.get(a.id) || 0) - (configFetchedAt.get(b.id) || 0))[0];
         if (stale) {
           try { await configuration(stale.id, r.page === "setup"); }
           catch (e) { if (e.code === "auth" || e.status === 429) throw e; }
@@ -263,8 +307,7 @@ export const WORKSPACE_JS = String.raw`
     function network(error) {
       if (error.code === "auth") return;
       $("#network-error").hidden = false;
-      $("#network-error").textContent = error.retryAt ? "Workspace status updates are paused until " + date(error.retryAt) + ". Your saved progress is safe." : error.message + " Your saved progress is safe. Use Check now to retry, or wait for the next automatic check.";
-      updateRefreshStatus();
+      $("#network-error").textContent = error.retryAt ? "Status updates are paused until " + date(error.retryAt) + ". Your saved progress is safe." : error.message + " Your saved progress is safe, and Hitchhike will try again on its own.";
     }
     function draftIdentity() {
       if (HOSTED) return session?.user?.id && session?.workspace?.id ? JSON.stringify([session.user.id, session.workspace.id]) : null;
@@ -272,7 +315,7 @@ export const WORKSPACE_JS = String.raw`
     }
     function expireSession() {
       const identity = draftIdentity();
-      if (identity && (instructionDrafts.size || contextDrafts.size)) heldDrafts = { identity, instructions: new Map([...instructionDrafts].map(([key, value]) => [key, { ...value }])), contexts: new Map(contextDrafts) };
+      if (identity && contextDrafts.size) heldDrafts = { identity, contexts: new Map(contextDrafts) };
       signOut("Your session expired. Sign in to continue.", true);
       if (heldDrafts) {
         const signIn = $("a.btn", $("#gate"));
@@ -288,6 +331,7 @@ export const WORKSPACE_JS = String.raw`
       epoch++;
       routeEpoch++;
       signedIn = false;
+      stopWatch();
       resetPolling();
       loading = null;
       refreshing = false;
@@ -301,11 +345,10 @@ export const WORKSPACE_JS = String.raw`
       guides.clear();
       pairing.clear();
       contextDrafts.clear();
-      instructionDrafts.clear();
-      instructionSaves.clear();
       memory.del(KEY);
       dirty = false;
       main.replaceChildren();
+      $("#side-agents")?.replaceChildren();
       $("#boot").replaceChildren();
       if ($("#owner-key")) $("#owner-key").value = "";
       $("#workspace").hidden = true;
@@ -314,31 +357,30 @@ export const WORKSPACE_JS = String.raw`
       $("#session-error").hidden = !message;
       $("#session-error").textContent = message;
     }
-    async function refresh(options = {}) {
+    async function refresh() {
       if (refreshing || !signedIn || document.hidden) return;
       syncPollScope();
       const now = Date.now(), generation = epoch;
       pollRounds = pollRounds.filter(at => at > now - POLL_WINDOW);
-      if (readPauseUntil > now || (!options.manual && pollRounds.length >= POLL_ROUNDS)) { schedule(); return; }
-      if (options.manual && lastRefreshAt > 0 && now - lastRefreshAt < 60e3) { toast("Status was checked less than a minute ago. You can check again in a moment."); return; }
-      if (!options.manual) pollRounds.push(now);
+      if (readPauseUntil > now || pollRounds.length >= POLL_ROUNDS) { schedule(); return; }
+      pollRounds.push(now);
       lastRefreshAt = now;
       clearTimeout(timer);
       clearTimeout(focusTimer);
       refreshing = true;
-      updateRefreshStatus();
       try {
         await fetchOverview();
         if (generation !== epoch) return;
-        const route2 = parseRoute();
-        if (route2.page === "activity" || (route2.page === "agents" && !route2.id)) await render(false);
-        else if (route2.page === "setup") updateSetupEvidence(route2.id);
+        const r = parseRoute();
+        renderSideAgents(r);
+        if (r.page === "activity" || (r.page === "agents" && !r.id)) await render(false);
+        else if (r.page === "setup") updateSetupStatus(r.id);
       } catch (e) {
         if (generation === epoch) network(e);
       } finally {
         if (generation === epoch) {
           refreshing = false;
-          if (!options.manual) pollStep = Math.min(pollStep + 1, POLL_DELAYS.length - 1);
+          pollStep = Math.min(pollStep + 1, POLL_DELAYS.length - 1);
           nextPollAt = Date.now() + POLL_DELAYS[pollStep];
           schedule();
         }
@@ -348,12 +390,12 @@ export const WORKSPACE_JS = String.raw`
       clearTimeout(timer);
       if (!signedIn) return;
       if (!nextPollAt) nextPollAt = Date.now() + POLL_DELAYS[pollStep];
-      updateRefreshStatus();
       if (!document.hidden && !refreshing) timer = setTimeout(() => refresh(), Math.max(1, automaticDeadline() - Date.now()));
     }
     function foregroundRefresh() {
       clearTimeout(focusTimer);
       if (!signedIn || document.hidden) { clearTimeout(timer); return; }
+      if (watch?.paused) resumeWatch();
       if (Date.now() - lastRefreshAt < 60e3) nextPollAt = Math.max(nextPollAt, lastRefreshAt + 60e3);
       if (readPauseUntil > Date.now() || Date.now() - lastRefreshAt < 60e3) { schedule(); return; }
       focusTimer = setTimeout(() => refresh(), 200);
@@ -381,105 +423,93 @@ export const WORKSPACE_JS = String.raw`
     function skeleton() {
       return el("div", { role: "status", "aria-label": "Loading page" }, el("div", { class: "skeleton loading-title" }), [1, 2, 3].map(() => el("div", { class: "skeleton-row" }, el("div", { class: "skeleton" }), el("div", { class: "skeleton short" }))));
     }
+    function agentHref(a) { return (a.last_seen_at ? "#/agents/" : "#/setup/") + encodeURIComponent(a.id); }
+    function renderSideAgents(r = parseRoute()) {
+      const slot = $("#side-agents");
+      if (!slot) return;
+      const agents = overview?.agents || [];
+      slot.replaceChildren(...(agents.length ? [el("p", { class: "slabel" }, "Assistants"), ...agents.map(a => el("a", { class: "sitem", href: agentHref(a), "aria-current": r.id === a.id && ["agents", "setup"].includes(r.page) ? "page" : null },
+        tile(a.platform, "mini", a.name), el("span", {}, a.name), el("span", { class: a.last_seen_at ? "ok" : "wait", role: "img", "aria-label": a.last_seen_at ? "Connected" : "Not connected yet" }))),
+        el("a", { class: "sitem", href: "#/add", "aria-current": r.page === "add" ? "page" : null }, el("span", { class: "mini add" }, svg("plus")), el("span", {}, "Add an assistant"))] : []));
+    }
+    function renderAccount() {
+      const email = HOSTED && typeof session?.user?.email === "string" ? session.user.email : "";
+      const initial = email.trim().charAt(0).toUpperCase();
+      for (const node of [$("#account-avatar"), $("#account-button")]) if (node) node.replaceChildren(initial || svg("person"));
+      const label = $("#account-label");
+      if (label) label.textContent = email || (HOSTED ? "Your workspace" : "Self-hosted workspace");
+    }
     async function render(focus = true) {
       if (!signedIn || !overview) return;
       const generation = ++routeEpoch;
       const r = parseRoute();
-      dirty = contextDrafts.size > 0 || instructionDrafts.size > 0;
-      $("#agents-nav").setAttribute("aria-current", ["activity", "conversations", "jobs"].includes(r.page) ? "false" : "page");
-      $("#activity-nav").setAttribute("aria-current", ["activity", "conversations", "jobs"].includes(r.page) ? "page" : "false");
-      main.replaceChildren(skeleton());
+      dirty = contextDrafts.size > 0;
+      stopWatch();
+      const section = ["activity", "conversations", "jobs"].includes(r.page) ? "activity" : r.page === "settings" ? "settings" : "agents";
+      $$("[data-nav]").forEach(link => link.setAttribute("aria-current", link.dataset.nav === section ? "page" : "false"));
+      const flow = ["setup", "add", "connect"].includes(r.page);
+      setClass(document.body, "flow", flow);
+      setClass(document.body, "tabbed", !flow && overview.agents.length > 0);
+      renderSideAgents(r);
+      if (focus) main.replaceChildren(skeleton());
       try {
         let content;
-        if (r.page === "connect") content = connectPage(r.id);
-        else if (r.page === "setup") content = await setupPage(r.id, r.step);
-        else if (r.page === "agents" && r.id) content = await configurationPage(r.id);
+        if (r.page === "connect") content = await connectIntent(r.id);
+        else if (r.page === "add") content = chooserPage(true);
+        else if (r.page === "setup") content = await setupPage(r.id);
+        else if (r.page === "agents" && r.id) content = await assistantPage(r.id);
         else if (r.page === "activity") content = await activityPage();
         else if (r.page === "conversations") content = await conversationPage(r.id);
         else if (r.page === "jobs") content = await legacyJobPage(r.id);
         else if (r.page === "settings") content = await settingsPage();
-        else content = agentsPage();
-        if (r.page === "activity" || (r.page === "agents" && !r.id)) {
-          const pendingDraft = overview.agents.find(agent => instructionDrafts.has(instructionKey(agent.id)));
-          if (pendingDraft) content.splice(1, 0, el("p", { class: "small muted draft-reminder" }, "Unsaved instructions are kept in this tab. ", el("a", { href: "#/setup/" + encodeURIComponent(pendingDraft.id) + "/instructions" }, "Return to " + pendingDraft.name + "’s draft.")));
-        }
-        if (generation !== routeEpoch) return;
-        content = [content].flat();
-        if (!["setup", "connect"].includes(r.page)) content.splice(Math.max(0, content.findIndex(node => node?.tagName === "HEADER") + 1), 0, refreshStatus());
+        else content = homePage();
+        if (generation !== routeEpoch || content === null) return;
         main.replaceChildren(...[content].flat().filter((node) => node !== null && node !== undefined && node !== false));
-        // Detached controls report no layout height; measure after mounting even
-        // when navigating between pages does not change the observed width.
-        resizeInstructionPreviews();
+        setClass(main, "enter", false);
         if (focus) {
+          void main.offsetWidth;
+          setClass(main, "enter", true);
           window.scrollTo(0, 0);
           main.focus({ preventScroll: true });
         }
-        document.title = (main.querySelector("h1")?.textContent || "Your agents") + " · Hitchhike";
+        document.title = (main.querySelector("h1")?.textContent || "Your assistants") + " · Hitchhike";
+        if (r.page === "setup") watchConnection(r.id);
       } catch (e) {
         if (generation !== routeEpoch || e.code === "auth") return;
         if (e.status === 429) network(e);
-        main.replaceChildren(back(), head("This page couldn’t load", "Your saved progress is still here."), refreshStatus(), note("Try again", e.message, btn("Reload page", () => render()), "error"));
+        main.replaceChildren(el("div", { class: "narrow" }, back(), el("h1", { class: "h1" }, "This page couldn’t load"), el("p", { class: "lead" }, "Your saved progress is still here."), note("Try again", e.message, btn("Reload page", () => render()), "error")));
       }
       schedule();
     }
     window.addEventListener("hashchange", () => render());
-    function growInstructionPrompt(preview, prompt) {
-      if (preview.tagName === "DETAILS" && !preview.open) return;
-      prompt.style.height = "auto";
-      const border = Math.max(0, (prompt.offsetHeight || 0) - (prompt.clientHeight || 0));
-      prompt.style.height = Math.max(160, prompt.scrollHeight + border) + "px";
-    }
-    function resizeInstructionPreviews() {
-      $$(".instruction-preview", main).forEach(preview => {
-        const prompt = $("textarea", preview);
-        if (prompt) growInstructionPrompt(preview, prompt);
-      });
-    }
-    window.addEventListener("resize", resizeInstructionPreviews);
-    if (typeof ResizeObserver !== "undefined") {
-      let instructionWidth = 0;
-      new ResizeObserver(entries => {
-        const width = entries[0]?.contentRect.width;
-        if (width !== instructionWidth) { instructionWidth = width; resizeInstructionPreviews(); }
-      }).observe(main);
-    }
+    try { window.matchMedia?.("(max-width: 899px), (pointer: coarse)")?.addEventListener?.("change", () => { const page = parseRoute().page; if (signedIn && ["agents", "add", "setup"].includes(page)) render(false); }); } catch {}
     window.addEventListener("beforeunload", (e) => {
       if (dirty || heldDrafts) {
         e.preventDefault();
         e.returnValue = "";
       }
     });
-    function readiness(a) {
-      const c = configs.get(a.id);
-      if (!c) return { text: a.last_seen_at ? "Access observed" : "Waiting for contact", tone: a.last_seen_at ? "" : "pending", detail: "Readiness not loaded" };
-      if (c.readiness.peer_collaboration?.verified) return { text: "Exchange verified", tone: "good", detail: c.readiness.background.verified ? "Background verified" : "Background not verified" };
-      if (c.onboarding.step === "done") return { text: "Set up", tone: "", detail: "No recent peer exchange on record" };
-      if (c.readiness.access.verified) return { text: "Access confirmed", tone: "", detail: "No peer exchange observed yet" };
-      return { text: "Waiting for contact", tone: "pending", detail: "Waiting for first contact" };
+    function existingFor(platformId) {
+      return overview.agents.find(a => a.platform === platformId || (OPENAI.has(platformId) && OPENAI.has(a.platform)));
     }
-    function agentsPage() {
-      const agents = overview.agents, children = [head("Your agents", "Good help, already in your corner. Connect your assistants and let them work together.", btn([icon("plus"), "Connect an agent"], "#/connect"))];
-      if (!agents.length) {
-        children.push(el("section", { class: "empty-state" }, el("h2", {}, "Start with the assistant you talk to most."), el("p", {}, "Then add someone it can turn to. Hitchhike carries the context and replies between them, so you don’t have to."), btn("Connect your first agent", "#/connect"), foot("A connection doesn’t wake an assistant. We’ll help you check access, complete an exchange, and understand its background options.")));
-        return children;
-      }
-      const pending = agents.find((a) => {
-        const c = configs.get(a.id);
-        return c && !["exchange", "done"].includes(c.onboarding.step) && !setupReady(c);
-      });
-      if (pending) {
-        const c = configs.get(pending.id);
-        children.push(note("Continue connecting " + pending.name, "Your saved connection instructions are ready when you are.", btn("Continue setup", "#/setup/" + encodeURIComponent(pending.id) + "/" + (c.onboarding.step === "choose" ? "connect" : c.onboarding.step), true)));
-      }
-      const failures = overview.jobs.filter((j) => j.status === "failed" && Date.now() - Date.parse(j.updated_at) < 864e5);
-      if (failures.length) children.push(note("An exchange needs attention", "Open Activity to see what happened and how to recover.", btn("View activity", "#/activity", true), "error"));
-      children.push(el("div", { class: "section-heading" }, el("h2", {}, "Connected assistants"), el("span", { class: "small muted" }, agents.length + " " + (agents.length === 1 ? "connection" : "connections"))), el("div", { class: "agent-list" }, agents.map((a) => {
-        const c = configs.get(a.id), r = readiness(a);
-        return el("a", { class: "agent-row", href: "#/agents/" + encodeURIComponent(a.id) }, agentIcon(a.platform), el("div", {}, el("div", { class: "agent-name" }, a.name), el("p", {}, a.platform_label + (c?.settings.purpose ? " · " + c.settings.purpose.slice(0, 110) : " · " + (a.can_work ? "Send and receive work" : "Send work")))), el("div", { class: "agent-status" }, state(r.text, r.tone), el("p", {}, r.detail)), icon("arrow"));
-      })), foot("Your agents work in their own apps. Hitchhike keeps the handoffs and replies together."));
-      return children;
+    function chooserPage(adding) {
+      const row = ([id, , blurb]) => {
+        const a = existingFor(id);
+        const detail = a ? el("span", { class: "st" + (a.last_seen_at ? "" : " warn") }, el("span", { class: a.last_seen_at ? "ok" : "wait" }), a.last_seen_at ? "Connected" : COMPUTER.has(a.platform) ? "Finish on your computer" : "Not connected yet") : el("span", {}, blurb);
+        return el("a", { class: "row", href: "#/connect/" + encodeURIComponent(id), "data-platform": id, onclick: arm(id) }, tile(id), el("span", { class: "rt" }, el("b", {}, labelOf(id)), detail), svg("chev", "chev"));
+      };
+      const pick = group => CHOICES.filter(choice => choice[1] === group);
+      const moreList = el("div", { class: "group", id: "more-assistants", hidden: !moreOpen }, pick("more").map(row));
+      const more = el("button", { type: "button", class: "more", "aria-expanded": moreOpen ? "true" : "false", "aria-controls": "more-assistants" }, el("span", { class: "rt" }, el("b", {}, "More assistants"), el("span", {}, "Grok chat, OpenClaw, another agent")), svg("down", "chev"));
+      more.addEventListener("click", () => { moreOpen = !moreOpen; more.setAttribute("aria-expanded", String(moreOpen)); moreList.hidden = !moreOpen; });
+      const lists = isPhone()
+        ? [el("h2", { class: "label" }, svg("phone"), "Works from this phone"), el("div", { class: "group" }, pick("phone").map(row)), el("h2", { class: "label second" }, svg("computer"), "Add once from a computer"), el("div", { class: "group" }, pick("computer").map(row))]
+        : [el("div", { class: "group desk-list" }, DESK_ORDER.map(id => row(CHOICES.find(choice => choice[0] === id))))];
+      return el("div", { class: "chooser narrow" }, adding ? flowTop("#/agents", "Your assistants") : null,
+        el("h1", { class: "h1" }, adding ? "Add an assistant" : "Which assistant do you use?"),
+        el("p", { class: "lead" }, adding ? "It joins the assistants you’ve already connected." : "Pick one to start. You can add the others after."),
+        lists, more, moreList);
     }
-    const SURFACES = { dot: [["dots", "Dots"]], chatgpt: [["chat", "ChatGPT · Experimental"], ["dots", "Dots"]], claude: [["chat", "Claude chat"]], codex: [["desktop", "Codex desktop"], ["terminal", "Codex CLI"], ["cloud", "Codex cloud"]], "claude-code": [["terminal", "Claude Code terminal"], ["desktop", "Claude Code desktop"], ["cloud", "Claude Code cloud routines"]] };
     function uniqueHandle(name) {
       let base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 26);
       if (!/^[a-z]/.test(base) || base.length < 2 || ["owner", "relay", "all", "any", "admin", "me"].includes(base)) base = "agent-" + base;
@@ -487,60 +517,69 @@ export const WORKSPACE_JS = String.raw`
       while (overview.agents.some((a) => a.handle === value || a.id === value)) value = base + "-" + n++;
       return value;
     }
-    function connectPage(platformId) {
-      const p = overview.platforms.find((x) => x.id === platformId);
-      if (!p) return el("div", { class: "provider-picker" }, back(), head("Who’s coming along?", "Connect the assistants you already use. Each one brings its own tools and intelligence."), el("div", { class: "provider-list" }, overview.platforms.map((p2) => el("a", { class: "provider-option", href: "#/connect/" + encodeURIComponent(p2.id) }, agentIcon(p2.id), el("span", { class: "provider-copy" }, el("strong", {}, p2.label), el("span", { class: "muted" }, p2.blurb)), icon("arrow")))), foot("Have a ChatGPT connection already? Dots can use that same connection."));
-      const shared = ["dot", "chatgpt"].includes(p.id) ? overview.agents.filter((a) => ["dot", "chatgpt"].includes(a.platform)) : [];
-      if (shared.length) return [back("#/connect", "Choose an assistant"), head("Use the connection you already have", "ChatGPT and Dots may share one authorization. Reusing it avoids changing the connection underneath your other conversations."), el("div", { class: "agent-list" }, shared.map((a) => el("a", { class: "agent-row", href: "#/setup/" + encodeURIComponent(a.id) + "/connect" }, agentIcon(a.platform), el("div", {}, el("strong", {}, a.name), el("p", {}, a.platform_label)), state(readiness(a).text), icon("arrow")))), foot("A separate name would not establish independent routing. The access check confirms the authorized identity before any work is sent.")];
-      const savedKey = "hitchhike:new-connection:" + (session?.workspace?.id || "selfhost") + ":" + p.id, prior = memory.get(savedKey);
-      let attempt = null;
+    const creating = new Map();
+    // A tap inside the app arms one add; links and sign-in intents only ask.
+    let armedIntent = null;
+    const arm = id => () => { armedIntent = id; };
+    function confirmIntent(platformId) {
+      const add = el("button", { type: "button", class: "btn lg block" }, "Add " + labelOf(platformId));
+      add.addEventListener("click", () => { armedIntent = platformId; render(); });
+      return el("div", { class: "setup" }, flowTop("#/add", "All assistants"), route2(tile(platformId, "lg"), busTile()),
+        el("h1", { class: "h1" }, "Add " + labelOf(platformId) + " to Hitchhike"), el("p", { class: "lead" }, "It gets its own connection in your workspace. Next you’ll see the one step to do in " + labelOf(platformId) + "."),
+        el("div", { class: "dock stack" }, add, el("a", { class: "alt", href: "#/add" }, "Choose another assistant")));
+    }
+    // One tap adds an assistant with today's defaults. Repeating the intent
+    // (back, reload, or a second device) reopens the same connection.
+    async function connectIntent(platformId) {
+      const armed = armedIntent === platformId, valid = platformId && (LABELS[platformId] || platformOf(platformId));
+      armedIntent = null;
+      if (!valid) { route("#/add", true); return null; }
+      const found = existingFor(platformId);
+      if (found) { route(agentHref(found), true); return null; }
+      if (!armed) return confirmIntent(platformId);
+      main.replaceChildren(el("div", { class: "setup", role: "status" }, flowTop("#/add", "All assistants"), route2(tile(platformId, "lg"), busTile()), el("h1", { class: "h1" }, "Adding " + labelOf(platformId) + "…"), el("p", { class: "lead" }, "Making room for it in your workspace.")));
+      const generation = epoch;
       try {
-        attempt = prior ? JSON.parse(prior) : null;
-      } catch {
+        const agent = await createConnection(platformId);
+        if (generation === epoch) route("#/setup/" + encodeURIComponent(agent.id), true);
+        return null;
+      } catch (e) {
+        if (e.code === "auth" || generation !== epoch) return null;
+        return el("div", { class: "setup" }, flowTop("#/add", "All assistants"), el("h1", { class: "h1" }, "Couldn’t add " + labelOf(platformId)), el("p", { class: "lead" }, e.message), el("div", { class: "actions" }, btn("Try again", () => { armedIntent = platformId; render(); }), btn("Choose another", "#/add", true)));
       }
-      const names = el("input", { id: "agent-name", value: attempt?.name || p.label.replace(" (OpenAI)", ""), required: true, maxlength: 80, autocomplete: "off" });
-      const surfaceOptions = SURFACES[p.id] || [[["grok-bot", "grok", "muse"].includes(p.id) ? "chat" : "terminal", p.label]];
-      const surface = el("select", { id: "agent-surface" }, surfaceOptions.map(([id, label]) => el("option", { value: id, selected: id === attempt?.surface }, label)));
-      const error = errorBox(), submit = btn("Get connection instructions", save), form = el("form", { onsubmit: (e) => {
-        e.preventDefault();
-        save();
-      } }, surfaceOptions.length > 1 ? el("div", { class: "form-group" }, el("label", { for: "agent-surface" }, "Where do you use " + p.label + "?"), surface, el("p", {}, "We’ll show the instructions for this surface.")) : null, el("div", { class: "form-group" }, el("label", { for: "agent-name" }, "What would you like to call it?"), names, el("p", {}, "A familiar name helps you recognize it later.")), el("div", { class: "status-summary" }, el("h3", {}, "Start with useful defaults"), el("p", {}, "Use this connection to ask for help and receive work. Share relevant supplied context only. You can refine permissions and collaborators afterward.")), error, el("div", { class: "actions" }, submit));
-      if (attempt) form.prepend(note("Resume your previous attempt", "We’ll recover the same connection if it was already created."));
-      let busy = false, saved = null;
-      async function save() {
-        if (busy) return;
-        if (!names.reportValidity()) return;
-        busy = true;
-        submit.disabled = true;
-        error.hidden = true;
-        const generation = epoch;
-        if (!attempt) {
-          attempt = { id: uniqueHandle(names.value.trim()), name: names.value.trim(), surface: surface.value };
-          memory.set(savedKey, JSON.stringify(attempt));
-        }
+    }
+    function createConnection(platformId) {
+      if (creating.has(platformId)) return creating.get(platformId);
+      const job = (async () => {
+        const name = labelOf(platformId), defaults = platformOf(platformId)?.defaults || {};
+        let out;
         try {
-          let existing = overview.agents.find((a) => a.handle === attempt.id || a.id === attempt.id);
-          let out = saved || (existing ? { agent: existing } : await api("/v1/admin/agents", { method: "POST", body: { id: attempt.id, name: attempt.name, platform: p.id, ...p.defaults, can_request: true, can_work: true } }));
-          saved = out;
-          if (generation !== epoch) return;
-          if (out.guide) guides.set(out.agent.id, out.guide);
-          if (out.pairing) pairing.set(out.agent.id, { expires_at: out.pairing.expires_at, guide: out.guide });
-          await api("/v1/agents/" + encodeURIComponent(out.agent.id) + "/onboarding", { method: "PATCH", body: { provider: p.id, surface: attempt.surface, step: "connect" } });
-          await fetchOverview();
-          memory.del(savedKey);
-          route("#/setup/" + encodeURIComponent(out.agent.id) + "/connect");
+          out = await api("/v1/admin/agents", { method: "POST", body: { id: uniqueHandle(name), name, platform: platformId, ...defaults, can_request: true, can_work: true } });
         } catch (e) {
-          if (e.code === "handle_taken") {
-            await fetchOverview().catch(() => {
-            });
-            showError(error, new Error("This connection may already have been saved. Continue once more to reopen its setup."));
-          } else showError(error, e);
-        } finally {
-          busy = false;
-          submit.disabled = false;
+          // A response lost after the write still created the connection.
+          if (e.code === "auth") throw e;
+          await fetchOverview().catch(() => {});
+          const saved = existingFor(platformId);
+          if (saved) return saved;
+          throw e;
         }
-      }
-      return [back("#/connect", "Choose an assistant"), head("Make room for " + p.label, surfaceOptions.length > 1 ? "Choose where you use it. We’ll take you through the rest." : "Give your connection a name. We’ll take you through the rest."), el("div", { class: "reading" }, form)];
+        const id = out.agent.id;
+        if (out.pairing && out.guide) {
+          const instructions = guideSteps(out.guide).map(step => step.copy).find(copy => typeof copy === "string" && copy.includes(" /v1/pair"));
+          if (instructions) pairing.set(id, { expires_at: out.pairing.expires_at, instructions });
+        }
+        await api("/v1/agents/" + encodeURIComponent(id) + "/onboarding", { method: "PATCH", body: { provider: platformId, ...(platformId === "codex" ? { surface: "terminal" } : {}), step: "connect" } }).catch(() => {});
+        if (GOOD_AT[platformId]) {
+          const minutes = SCHEDULE_DEFAULT[platformId] || null;
+          await api("/v1/agents/" + encodeURIComponent(id) + "/collaboration", { method: "PUT", body: { expected_version: 0, purpose: GOOD_AT[platformId], setup_background: { enabled: !!minutes, interval_minutes: minutes } } })
+            .then(value => { configs.set(id, value); configFetchedAt.set(id, Date.now()); }).catch(() => {});
+        }
+        await fetchOverview();
+        return overview.agents.find(a => a.id === id) || out.agent;
+      })();
+      creating.set(platformId, job);
+      job.then(() => creating.delete(platformId), () => creating.delete(platformId));
+      return job;
     }
     async function configuration(id, force = false) {
       if (configs.has(id) && (readPauseUntil > Date.now() || (!force && Date.now() - (configFetchedAt.get(id) || 0) < CONFIG_MAX_AGE))) return configs.get(id);
@@ -551,7 +590,6 @@ export const WORKSPACE_JS = String.raw`
           const previous = configs.get(id);
           if (previous && (previous.version !== value.version || previous.onboarding.surface !== value.onboarding.surface || previous.onboarding.provider !== value.onboarding.provider)) {
             for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
-            pairing.delete(id);
           }
           configs.set(id, value); configFetchedAt.set(id, Date.now());
         }
@@ -560,558 +598,512 @@ export const WORKSPACE_JS = String.raw`
       configRequests.set(id, request);
       try { return await request; } finally { if (configRequests.get(id) === request) configRequests.delete(id); }
     }
-    async function getGuide(id, surface, background, force = false) {
-      const draft = instructionDrafts.get(instructionKey(id));
-      background ||= draft?.backgroundEdited ? draft.background : null;
-      const preview = background ? "&background_enabled=" + background.enabled + (background.enabled ? "&background_interval=" + background.interval_minutes : "") : "";
+    async function getGuide(id, surface, force = false) {
       const a = overview?.agents.find(agent => agent.id === id);
-      const version = JSON.stringify([configs.get(id)?.version ?? 0, configs.get(id)?.release?.enabled, a?.name, a?.platform, a?.can_request, a?.can_work, a?.work_types, a?.poll_minutes]);
-      const key = id + ":" + surface + ":" + version + preview;
+      const version = JSON.stringify([configs.get(id)?.version ?? 0, configs.get(id)?.settings?.setup_background ?? null, a?.name, a?.platform, a?.can_request, a?.can_work]);
+      const key = id + ":" + (surface || "") + ":" + version;
       if (!force && guides.has(key)) return guides.get(key);
       const generation = epoch;
-      const response = await api("/v1/admin/agents/" + encodeURIComponent(id) + "/setup?surface=" + encodeURIComponent(surface || "") + preview);
-      if (generation !== epoch) throw Object.assign(new Error("Your session changed. Reopen connection setup."), { code: "auth" });
+      const response = await api("/v1/admin/agents/" + encodeURIComponent(id) + "/setup?surface=" + encodeURIComponent(surface || ""));
+      if (generation !== epoch) throw Object.assign(new Error("Your session changed. Reopen this page."), { code: "auth" });
       if (response.guide) guides.set(key, response.guide);
       return response.guide;
     }
-    async function saveStep(id, step, surface, provider) {
-      const current = configs.get(id);
-      if (current?.onboarding.step === "done" && !["connect", "done"].includes(step) && !surface && !provider) return current;
-      const out = await api("/v1/agents/" + encodeURIComponent(id) + "/onboarding", { method: "PATCH", body: { step, ...surface ? { surface } : {}, ...provider ? { provider } : {} } });
-      configs.set(id, out);
-      if (surface || provider) for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
-      return out;
+    function forgetGuides(id) {
+      for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
     }
-    const PROFILE_CHOICES = [
-      { id: "judgment", label: "Use your judgment", description: "If helpful, you may involve your connected assistants. You decide whether to ask and which assistant fits the work." },
-      { id: "available", label: "Be available to help", description: "Help my other assistants when they ask, using the permissions and context I’ve given you." },
-      { id: "delegate", label: "Delegate work", description: "Ask capable peers to handle suitable parts, then check and combine their work." },
-      { id: "offload", label: "Offload routine work", description: "Hand off a clear task, avoid duplicate work, and keep track of the result." },
-      { id: "collaborate", label: "Work as a team", description: "Exchange questions and work within your saved responsibilities and permissions." },
-      { id: "second_opinion", label: "Get a second opinion", description: "Ask for critique or an independent check, then decide what to use." }
-    ];
-    function instructionSelection(settings) {
-      const value = settings?.instructions;
-      return { profile: PROFILE_CHOICES.some(p => p.id === value?.profile) ? value.profile : "judgment", custom_prompt: typeof value?.custom_prompt === "string" ? value.custom_prompt : null };
+    function guideSteps(g, surface) {
+      const chosen = surface && g?.surfaces?.find(item => item.id === surface);
+      return [...(chosen?.steps || []), ...(g?.steps || []), ...((g?.surfaces || []).flatMap(item => item.steps || []))];
     }
-    function sameInstructions(a, b) { return a?.profile === b?.profile && a?.custom_prompt === b?.custom_prompt; }
-    function instructionKey(id) { return (session?.workspace?.id || overview?.workspace?.id || "selfhost") + ":" + id; }
-    function forgetInstructionDraft(id) {
-      const key = instructionKey(id), flight = instructionSaves.get(key);
-      if (flight) flight.discarded = true;
-      instructionDrafts.delete(key); instructionSaves.delete(key);
+    function mcpUrl(g) {
+      return guideSteps(g).map(step => (step.copy || "").trim()).find(text => /^https?:\/\/\S+$/.test(text)) || null;
     }
-    function instructionEditor(a, c, g, options = {}) {
-      const key = instructionKey(a.id);
-      const makeProfiles = guide => PROFILE_CHOICES.map(choice => {
-        const supplied = guide.instructionProfiles?.find(profile => profile.id === choice.id);
-        return { ...choice, ...supplied, prompt: supplied?.prompt || choice.description + "\n\n" + (guide.collaborationPrompt || guide.prompts?.[0]?.copy || "Follow the saved connection permissions and refresh your instructions before starting work.") };
-      });
-      let profiles = makeProfiles(g);
-      const sameBackground = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
-      const resolvedBackground = current => current.settings.setup_background ?? (g.backgroundSelection ? { enabled: g.backgroundSelection.enabled, interval_minutes: g.backgroundSelection.intervalMinutes } : null);
-      let saved = instructionSelection(c.settings), savedBackground = resolvedBackground(c), draft = instructionDrafts.get(key) || { ...saved, background: savedBackground, baseBackground: c.settings.setup_background ?? null, version: c.version, base: saved }, busy = false, previewing = false, pendingReplacement = null;
-      draft.background ??= savedBackground;
-      const rebase = current => { if (current?.version > draft.version && sameInstructions(instructionSelection(current.settings), draft.base) && sameBackground(current.settings.setup_background, draft.baseBackground)) draft.version = current.version; };
-      rebase(c);
-      const error = errorBox(), stateLabel = el("span", { class: "instruction-state", role: "status", "aria-live": "polite" }), summary = el("p", { class: "muted small" });
-      const prompt = el("textarea", { id: "collaboration-prompt", rows: "8", maxlength: "16000", spellcheck: "false", "aria-describedby": "instruction-authority" });
-      const preview = options.paired ? el("details", { class: "instruction-preview" }, el("summary", {}, "Personal wording (optional)"), field("Saved instructions", prompt)) : el("div", { class: "instruction-preview" }, field("Introduction", prompt));
-      const controls = [];
-      const choices = el("fieldset", { class: "instruction-profiles" }, el("legend", {}, "How should this assistant work with others?"));
-      const moreSummary = el("summary", {}, "More starting points"), moreChoices = el("details", { class: "instruction-more" }, moreSummary);
-      const scheduleText = () => g.backgroundSchedulePrompt || "";
-      const withoutSchedule = text => scheduleText() && text.endsWith("\n\n" + scheduleText()) ? text.slice(0, -(scheduleText().length + 2)) : text;
-      const generated = () => withoutSchedule(profiles.find(profile => profile.id === draft.profile).prompt);
-      const combined = () => [prompt.value, scheduleText() && !prompt.value.endsWith(scheduleText()) ? scheduleText() : ""].filter(Boolean).join("\n\n");
-      const scheduleCopy = el("p", { class: "intro-schedule small" });
-      const scheduleSection = el("div", { class: "intro-background" }, el("strong", {}, "Background request · included when copying"), scheduleCopy);
-      const changed = () => {
-        const latest = configs.get(a.id), baseline = latest?.version > c.version ? instructionSelection(latest.settings) : saved;
-        return instructionSaves.has(key) || draft.profile !== baseline.profile || draft.custom_prompt !== baseline.custom_prompt || !sameBackground(draft.background, latest?.version > c.version ? resolvedBackground(latest) : savedBackground);
-      };
-      const copyLabel = () => changed() ? "Copy draft" : "Copy";
-      const remember = () => { draft = { ...draft }; if (changed() || instructionSaves.has(key)) instructionDrafts.set(key, draft); else instructionDrafts.delete(key); dirty = contextDrafts.size > 0 || instructionDrafts.size > 0; if (changed()) options.onChange?.(); };
-      const grow = () => growInstructionPrompt(preview, prompt);
-      const update = () => {
-        controls.forEach(({ input, row, profile }) => { input.checked = profile.id === draft.profile; row.className = "instruction-choice" + (input.checked ? " selected" : ""); });
-        prompt.value = draft.custom_prompt ?? generated();
-        scheduleCopy.textContent = scheduleText(); scheduleCopy.hidden = !scheduleText(); scheduleSection.hidden = !scheduleText();
-        summary.textContent = profiles.find(profile => profile.id === draft.profile).description;
-        moreSummary.textContent = "More starting points" + (["judgment", "available"].includes(draft.profile) ? "" : " · " + profiles.find(profile => profile.id === draft.profile).label + " selected");
-        stateLabel.textContent = changed() ? "Unsaved changes" : "Saved";
-        stateLabel.className = "instruction-state" + (changed() ? " unsaved" : "");
-        copyButton.textContent = copyLabel();
-        reset.hidden = draft.custom_prompt === null;
-        saveRow.hidden = !changed();
-        grow();
-      };
-      const replacementText = el("p", { id: "instruction-replacement-label" });
-      const replacementWarning = "Choose whether to keep your text or use the selected starter before saving.";
-      const clearReplacement = () => { pendingReplacement = null; replacement.hidden = true; if (error.textContent === replacementWarning) error.hidden = true; };
-      const keepText = btn("Keep my text", () => { if (busy) return; clearReplacement(); update(); controls.find(({ profile }) => profile.id === draft.profile).input.focus(); }, true);
-      const useStarter = btn("Use selected starter", () => { if (busy || !pendingReplacement) return; draft.profile = pendingReplacement; draft.custom_prompt = null; clearReplacement(); remember(); update(); controls.find(({ profile }) => profile.id === draft.profile).input.focus(); });
-      const replacement = el("div", { class: "instruction-replacement", role: "group", "aria-labelledby": "instruction-replacement-label", hidden: true }, replacementText, el("div", { class: "actions" }, keepText, useStarter));
-      const askReplacement = profile => {
-        if (busy) return;
-        pendingReplacement = profile.id;
-        replacementText.textContent = "Use the “" + profile.label + "” starter? Your current text stays here until you choose.";
-        replacement.hidden = false; update(); keepText.focus();
-      };
-      profiles.forEach(profile => {
-        const input = el("input", { type: "radio", name: "instruction-profile", value: profile.id, checked: profile.id === draft.profile });
-        const row = el("label", { class: "instruction-choice" }, input, el("span", {}, el("strong", {}, profile.label, profile.id === "judgment" ? el("span", { class: "recommended" }, "Recommended") : null), el("small", {}, profile.description)));
-        input.addEventListener("change", () => {
-          if (busy || profile.id === draft.profile) return;
-          if (draft.custom_prompt !== null) { askReplacement(profile); return; }
-          clearReplacement();
-          draft.profile = profile.id; draft.custom_prompt = null; remember(); update();
-        });
-        controls.push({ input, row, profile }); (PROFILE_CHOICES.slice(0, 2).some(choice => choice.id === profile.id) ? choices : moreChoices).append(row);
-      });
-      choices.append(moreChoices);
-      prompt.addEventListener("input", () => { if (busy) return; draft.custom_prompt = prompt.value === generated() ? null : prompt.value; remember(); stateLabel.textContent = changed() ? "Unsaved changes" : "Saved"; stateLabel.className = "instruction-state" + (changed() ? " unsaved" : ""); copyButton.textContent = copyLabel(); reset.hidden = draft.custom_prompt === null; saveRow.hidden = !changed(); grow(); });
-      preview.addEventListener("toggle", grow);
-      const copyButton = btn("Copy", async () => {
-        try { if (previewing) return; await navigator.clipboard.writeText(combined()); copyButton.textContent = "Copied"; toast(changed() ? "Draft copied. Save it here to keep these instructions." : "Instructions copied. Paste them into your assistant; copying does not install them."); setTimeout(() => { if (copyButton.isConnected) copyButton.textContent = copyLabel(); }, 2000); }
-        catch { preview.open = true; grow(); const manual = el("textarea", { class: "manual-introduction", rows: "8", readonly: true, "aria-label": "Complete introduction for manual copying" }); manual.value = combined(); preview.append(manual); manual.focus(); manual.select(); toast("Select and copy this complete introduction using your device’s Copy action."); }
-      }, true);
-      const reset = btn("Reset to generated instructions", () => askReplacement(profiles.find(profile => profile.id === draft.profile)), true);
-      preview.append(reset);
-      const reload = btn("Reload saved instructions", async () => { if (!confirm("Discard this draft and reload the saved instructions? Copy any text you want to keep first.")) return; instructionDrafts.delete(key); dirty = contextDrafts.size > 0 || instructionDrafts.size > 0; await render(false); }, true, { hidden: true });
-      const saveButton = btn("Save instructions", () => save().catch(() => {}), !options.paired);
-      async function save() {
-        if (busy || previewing || instructionSaves.has(key)) { const pendingError = new Error("These instructions are still saving. Your newer edits are kept; save them when that finishes."); showError(error, pendingError); throw pendingError; }
-        if (pendingReplacement) { const choiceError = new Error(replacementWarning); showError(error, choiceError); throw choiceError; }
-        if (!prompt.reportValidity()) throw new Error("Instructions must be at most 16,000 characters.");
-        rebase(configs.get(a.id));
-        busy = true; saveButton.disabled = true; error.hidden = true;
-        controls.forEach(({ input }) => input.disabled = true); prompt.disabled = true; reset.disabled = true; reload.disabled = true;
-        const submitted = { profile: draft.profile, custom_prompt: draft.custom_prompt }, submittedBackground = draft.background;
-        const submittedDraft = draft, generation = epoch, flight = {};
-        if (!instructionDrafts.has(key)) instructionDrafts.set(key, submittedDraft);
-        dirty = true;
-        instructionSaves.set(key, flight);
-        try {
-          const out = await api("/v1/agents/" + encodeURIComponent(a.id) + "/collaboration", { method: "PUT", body: { expected_version: draft.version, instructions: submitted, ...(submittedBackground ? { setup_background: submittedBackground } : {}) } });
-          if (generation !== epoch || flight.discarded) throw new Error("Your session or connection changed. Return to your agents before continuing.");
-          if (!configs.has(a.id) || configs.get(a.id).version <= out.version) configs.set(a.id, out);
-          saved = submitted; savedBackground = submittedBackground;
-          if (submittedDraft.version <= out.version) { submittedDraft.version = out.version; submittedDraft.base = submitted; submittedDraft.baseBackground = submittedBackground; }
-          const current = instructionDrafts.get(key);
-          if (current && current !== submittedDraft) { if (current.version <= out.version) { current.version = out.version; current.base = submitted; current.baseBackground = submittedBackground; } }
-          else instructionDrafts.delete(key);
-          draft = instructionDrafts.get(key) || { ...saved, background: savedBackground, baseBackground: savedBackground, version: out.version, base: saved };
-          if (instructionSaves.get(key) === flight) instructionSaves.delete(key);
-          for (const cacheKey of guides.keys()) if (cacheKey === a.id || cacheKey.startsWith(a.id + ":")) guides.delete(cacheKey);
-          dirty = contextDrafts.size > 0 || instructionDrafts.size > 0; reload.hidden = true; update(); toast(options.paired ? "Preferences saved. Your assistant loads them from Hitchhike." : "Instructions saved. Copy them into your assistant to apply them there.");
-          return out;
-        } catch (e) {
-          if (generation === epoch && !flight.discarded) { if (!instructionDrafts.has(key)) instructionDrafts.set(key, draft); dirty = true; reload.hidden = e.status !== 409; showError(error, e.status === 409 ? new Error("Instructions changed elsewhere. Your draft is kept here. Copy any text you need, then reload the saved version before saving again.") : e); }
-          throw e;
-        } finally { if (instructionSaves.get(key) === flight) instructionSaves.delete(key); busy = false; saveButton.disabled = false; controls.forEach(({ input }) => input.disabled = false); prompt.disabled = false; reset.disabled = false; reload.disabled = false; }
+    function terminalCommand(g, platform) {
+      const prefix = platform === "codex" ? "codex mcp add" : "claude mcp add";
+      return guideSteps(g, "terminal").map(step => (step.copy || "").trim()).find(text => text.startsWith(prefix)) || null;
+    }
+    function requestedInterval(a, c) {
+      const saved = c?.settings?.setup_background;
+      if (saved) return saved.enabled ? saved.interval_minutes : null;
+      if (c && c.version > 0 && c.settings?.background) return c.settings.background.method === "scheduled" ? c.settings.background.interval_minutes : null;
+      return SCHEDULED[a.platform] || null;
+    }
+    // One plain status per assistant, from what Hitchhike has actually observed.
+    function assistantStatus(a) {
+      if (!a.last_seen_at) return { text: COMPUTER.has(a.platform) ? "Finish on your computer" : "Not connected yet", dot: "wait", warn: true };
+      const c = configs.get(a.id), minutes = routine(a) ? requestedInterval(a, c) : c?.readiness?.background?.verified ? c.settings?.background?.interval_minutes : null;
+      const age = (Date.now() - Date.parse(a.last_seen_at)) / 60e3;
+      if (minutes) return age <= minutes * 3 + 5 ? { text: "Checks every " + every(minutes), dot: "ok" } : { text: "Last checked " + ago(a.last_seen_at), dot: "wait", warn: true };
+      return { text: "Active " + ago(a.last_seen_at), dot: age < 1440 ? "ok" : "idle" };
+    }
+    function statusLine(a) {
+      const s = assistantStatus(a);
+      return el("span", { class: "st" + (s.warn ? " warn" : "") }, el("span", { class: s.dot }), s.text);
+    }
+    function exchanged() {
+      return overview.jobs.some(j => j.status === "completed" && j.from && j.from !== "owner" && j.to && j.to !== "owner" && j.to !== "*" && j.from !== j.to)
+        || [...configs.values()].some(c => c?.readiness?.peer_collaboration?.verified);
+    }
+    function board(pair, title, sub, ...rest) {
+      return el("section", { class: "board", "aria-labelledby": "next-head" }, el("div", { class: "bhead" }, el("p", { class: "kicker" }, el("span", { class: "dot" }), "Next stop"), el("span", { class: "link", "aria-hidden": "true" }, pair[0], el("span", { class: "track" }), pair[1])),
+        el("h2", { id: "next-head" }, title), el("p", { class: "sub" }, sub), rest);
+    }
+    const byRecent = (x, y) => Date.parse(y.last_seen_at) - Date.parse(x.last_seen_at);
+    function handoffSenders(agents) {
+      return agents.filter(a => a.last_seen_at && a.can_request).sort((x, y) => Number(routine(x)) - Number(routine(y)) || byRecent(x, y));
+    }
+    function nextStop() {
+      const agents = overview.agents, live = agents.filter(a => a.last_seen_at);
+      if (!live.length || exchanged()) return null;
+      if (agents.length === 1) {
+        const a = live[0];
+        return board([tile(a.platform, "mini", a.name), el("span", { class: "mini empty" }, svg("plus"))], "Add a second assistant", a.name + " is connected. Hitchhike gets useful once it has another assistant to hand work to.", el("a", { class: "amber lg", href: "#/add" }, "Add an assistant"));
       }
-      let backgroundControl = null;
-      if (draft.background) {
-        const enabled = el("input", { id: "setup-background-enabled", type: "checkbox", checked: draft.background.enabled });
-        const minimum = ["claude", "grok", "chatgpt"].includes(a.platform) && c.onboarding.surface !== "dots" ? 60 : 5;
-        const interval = el("input", { id: "setup-background-interval", type: "number", min: String(minimum), max: "10080", value: draft.background.interval_minutes || (minimum === 60 ? 60 : 10) });
-        const intervalField = field("Check every (minutes)", interval, "Your assistant will report the cadence its provider supports.");
-        intervalField.hidden = !enabled.checked;
-        const previewBackground = async () => {
-          if (busy || previewing) return;
-          const minutes = Number(interval.value);
-          if (enabled.checked && (!Number.isSafeInteger(minutes) || minutes < minimum || minutes > 10080)) { showError(error, new Error("Choose a whole number from " + minimum + " to 10080 minutes.")); return; }
-          const previous = draft.background;
-          draft.background = { enabled: enabled.checked, interval_minutes: enabled.checked ? minutes : null };
-          draft.backgroundEdited = true; intervalField.hidden = !enabled.checked;
-          remember(); options.onChange?.(); previewing = true; copyButton.disabled = true; saveButton.disabled = true; enabled.disabled = true; interval.disabled = true; error.hidden = true;
-          try { g = await getGuide(a.id, c.onboarding.surface, draft.background); profiles = makeProfiles(g); update(); options.onGuide?.(g); }
-          catch (e) { draft.background = previous; enabled.checked = previous.enabled; interval.value = previous.interval_minutes || minimum; intervalField.hidden = !enabled.checked; remember(); update(); showError(error, e); }
-          finally { previewing = false; copyButton.disabled = false; saveButton.disabled = false; enabled.disabled = false; interval.disabled = false; }
-        };
-        enabled.addEventListener("change", previewBackground); interval.addEventListener("change", previewBackground);
-        backgroundControl = el("details", { class: "background-choice background-disclosure" }, el("summary", {}, "Background checking"),
-          check("Ask for a recurring check", enabled, "The introduction asks your assistant to create a supported schedule. Saving or copying here does not create one."), intervalField);
+      // Suggest only a pair the relay accepts. The sender's roster already applies both
+      // sides' sending and receiving, collaborators and a category one may send and the
+      // other takes on; without a loaded roster there is no card rather than a guess.
+      let sender = null, receiver = null;
+      for (const candidate of handoffSenders(agents)) {
+        receiver = (configs.get(candidate.id)?.roster || []).filter(peer => peer.work_categories?.length)
+          .map(peer => agents.find(a => a.id === peer.id && a.id !== candidate.id && a.last_seen_at)).filter(Boolean)
+          .sort((x, y) => Number(routine(y)) - Number(routine(x)) || byRecent(x, y))[0] || null;
+        if (receiver) { sender = candidate; break; }
       }
-      const preferences = el("details", { class: "working-preferences" }, el("summary", {}, "Working preferences (optional)"), choices, replacement, el("p", { id: "instruction-authority", class: "small muted" }, "These preferences do not change permissions or assign a permanent role."));
-      const saveRow = el("div", { class: "instruction-save-row" }, stateLabel, saveButton);
-      const node = el("section", { class: "instruction-editor" }, options.paired ? el("div", { class: "saved-preferences" }, choices, replacement, preview, el("p", { id: "instruction-authority", class: "small muted" }, "These preferences do not change permissions or assign a permanent role.")) : el("div", { class: "copybox instruction-copy" }, el("div", { class: "copytop" }, el("strong", {}, "Give this to " + a.name), copyButton), preview, scheduleSection), options.paired ? null : preferences, backgroundControl, saveRow, error, reload);
-      update();
-      return { node, save, changed, needsSave: () => changed() || (!!draft.background && !(configs.get(a.id) || c).settings.setup_background) };
+      if (!receiver) return null;
+      const prompt = "Ask " + receiver.name + " for a second opinion on this and bring back its answer.";
+      const minutes = routine(receiver) ? requestedInterval(receiver, configs.get(receiver.id)) : null;
+      const quote = el("p", {}, "“" + prompt + "”"), copyButton = el("button", { type: "button", class: "amber" }, el("span", {}, "Copy"));
+      copyButton.addEventListener("click", () => copyText(prompt, copyButton, quote));
+      return board([tile(sender.platform, "mini", sender.name), tile(receiver.platform, "mini", receiver.name)], "Try your first handoff", sender.name + " and " + receiver.name + " are connected. In " + sender.name + ", say:",
+        el("div", { class: "quote" }, quote, copyButton),
+        el("p", { class: "fine" }, minutes ? receiver.name + " checks every " + every(minutes) + ", so its answer can take " + (minutes <= 15 ? "a few minutes." : "a while.") : "Then open " + receiver.name + " and ask it to check Hitchhike for requests."));
     }
-    function backgroundGuideSection(a, c, g) {
-      const guide = g.backgroundGuide;
-      return el("section", { class: "background-guide" }, el("h3", {}, guide?.title || "Background setup"), el("p", {}, guide?.summary || "Create a supported provider schedule separately, then check actual runs. A saved method or copied prompt does not prove background execution."),
-        el("p", { class: "small muted" }, c.readiness?.background?.verified ? "Verified " + c.readiness.background.observed_runs + " completed and retrieved background runs." : "Background execution is optional and has not been verified."),
-        guide?.where ? el("p", { class: "guide-destination" }, el("strong", {}, "Where this goes: "), guide.where) : null,
-        guide?.intervalLabel ? el("p", { class: "small muted" }, guide.intervalLabel) : null,
-        guide?.runPrompt ? copybox("Task instructions — for manual schedule setup", guide.runPrompt) : guide?.setupPrompt ? copybox("Background instructions", guide.setupPrompt) : null,
-        !guide && g.backgroundPrompt ? copybox("Provider background guidance", g.backgroundPrompt) : null,
-        guide?.recovery?.length ? el("details", {}, el("summary", {}, "Background setup help"), el("ul", { class: "plain-list" }, guide.recovery.map(item => el("li", {}, item)))) : null,
-        foot("Expected pickup depends on the configured interval and provider delay. Verify authenticated calls and the returned result in the original conversation."));
+    function homePage() {
+      const agents = overview.agents;
+      if (!agents.length) return chooserPage(false);
+      const failures = overview.jobs.filter((j) => j.status === "failed" && Date.now() - Date.parse(j.updated_at) < 864e5);
+      return el("div", { class: "home narrow" }, el("h1", { class: "h1" }, "Your assistants"), nextStop(),
+        failures.length ? note("A handoff needs attention", "Open Activity to see what happened and how to recover.", el("a", { class: "pill on-white", href: "#/activity" }, "Activity"), "error") : null,
+        el("div", { class: "group" }, agents.map(a => el("a", { class: "row", href: agentHref(a) }, tile(a.platform, "", a.name), el("span", { class: "rt" }, el("b", {}, a.name), statusLine(a)), svg("chev", "chev"))),
+          el("a", { class: "row short", href: "#/add" }, el("span", { class: "tile add" }, svg("plus")), el("span", { class: "rt" }, el("b", { class: "add-label" }, "Add an assistant")))));
     }
-    function peerExchange(a, c) {
-      const testCategories = ["task", "research", "summarize", "monitor", "digest", "review"];
-      const peers = (c.roster || []).filter(peer => peer.id !== a.id && peer.last_seen_at && peer.work_categories?.some(type => testCategories.includes(type))), section = el("section", { class: "peer-exchange form-section" }, el("h2", {}, "Try an assistant-to-assistant exchange"));
-      if (!a.can_request || !peers.length) {
-        section.append(el("p", {}, !a.can_request ? "This connection cannot send requests. Enable sending deliberately in its preferences, or begin the exchange from an assistant permitted to send work here." : "No contacted collaborator is eligible for this harmless test. Open another connected assistant to confirm access, then check that its permissions include a category such as General tasks. Build-only connections need a separately authorized task."), btn(!a.can_request ? "Review sending permissions" : "Review your agents", !a.can_request ? "#/agents/" + encodeURIComponent(a.id) : "#/agents", true));
-        return section;
-      }
-      const select = el("select", { id: "peer-test-recipient" }, peers.map(peer => el("option", { value: peer.id }, peer.name + " · " + peer.id))), slot = el("div", {}), testKeys = new Map();
-      const draw = () => {
-        const peer = peers.find(item => item.id === select.value), category = testCategories.find(type => peer.work_categories.includes(type)), stable = "hitchhike-" + a.id + "-interactive";
-        if (!testKeys.has(peer.id)) testKeys.set(peer.id, "peer-check-" + crypto.randomUUID());
-        const idempotency = testKeys.get(peer.id), http = a.connects === "routine", beta = c.release?.enabled === true;
-        const task = "Return HITCHHIKE-PEER-CHECK and one sentence acknowledging this test. Do not browse, access private files, or change other services.";
-        const common = "Run one harmless assistant-to-assistant Hitchhike test from this conversation. Confirm " + (http ? "GET /v1/me" : "connection_status") + " identifies you as " + a.name + " (" + a.id + "). Use only this connection’s current permissions. The recipient is " + peer.name + " (" + peer.id + "), work category " + category + ". Ask it to " + task.charAt(0).toLowerCase() + task.slice(1) + "\n\n";
-        let protocol;
-        if (http) {
-          const sendBody = beta ? { to: peer.id, type: category, message: task, response_requested: true } : { to: peer.id, type: category, title: "Hitchhike peer check", goal: task };
-          protocol = "Use authenticated HTTP at " + new URL(API || location.origin, location.origin).origin + " with this connection’s privately stored bearer credential. Keep Authorization headers on this relay origin only; use Accept: application/json and Content-Type: application/json for JSON bodies. First GET /v1/me and confirm effective sending permission. "
-            + (beta ? "Then GET /v1/configuration and verify the exact recipient and type are still present in its eligible roster. " : "This release uses the legacy API. Use the exact approved recipient and type above; do not assume a configuration or roster endpoint exists. ")
-            + "Send POST " + (beta ? "/v1/conversations" : "/v1/jobs") + " with Idempotency-Key: " + idempotency + " and JSON " + JSON.stringify(sendBody) + ". Reuse this exact key and body only for retries of this pasted test; never issue a second test because a response was delayed. "
-            + (beta ? "Retain the returned request.id and conversation.id. The recipient must claim and reply using its own credential and current claim; do not impersonate it. If it is on demand, ask me to open it and check for work once. Retrieve the reply in THIS originating conversation: GET /v1/conversations/inbox?consumer_id=" + encodeURIComponent(stable) + "&limit=3; read GET /v1/conversations/:id?after=0&limit=20 using the retained conversation ID, following has_more with after=next_cursor. After reading each page, POST /v1/conversations/:id/acknowledge with only JSON {\"consumer_id\":" + JSON.stringify(stable) + ",\"cursor\":<that page’s next_cursor>}, replacing the cursor placeholder with the actual returned number. Reuse this exact stable delivery consumer ID for subsequent checks and acknowledgments. It is separate from a fresh execution ID used to claim work."
-              : "Retain the returned job.id. The recipient must claim and submit using its own credential and claim; do not impersonate it. If it is on demand, ask me to open it and check once. Retrieve GET /v1/jobs/:id?full=1 with that job ID, then GET /v1/inbox?limit=3. Read and report each inbox page before POST /v1/inbox/ack with only JSON {\"delivery_cursor\":<that page’s delivery_cursor>}, replacing the placeholder with the actual returned number. Continue pages while has_more using GET /v1/inbox?cursor=<next_cursor>&limit=3. Legacy acknowledgments are shared; use one designated reader and do not invent consumer_id arguments.");
-        } else {
-          protocol = beta ? "Refresh get_collaboration_config, verify the recipient and type are still eligible, then use send_message with to=" + JSON.stringify(peer.id) + ", type=" + JSON.stringify(category) + ", message=" + JSON.stringify(task) + ", response_requested=true and idempotency_key=" + JSON.stringify(idempotency) + ". Reuse that exact key and body only for retries of this pasted test. Retain the returned request.id and conversation.id. The recipient must claim and reply under its own current claim; do not impersonate it. If it is on demand, ask me to open it and check for work once. Retrieve the reply in THIS originating conversation using check_conversation_inbox with limit=3 and stable consumer_id " + stable + ", read all relevant get_conversation pages, and call acknowledge_conversation with conversation_id set to the returned conversation.id, that same consumer_id, and cursor set to the page’s next_cursor only after reading. Keep the same delivery consumer ID on future checks; each execution claim uses a fresh execution ID." : "Use the available legacy send_job tool with to=" + JSON.stringify(peer.id) + ", type=" + JSON.stringify(category) + ", title=\"Hitchhike peer check\", task=" + JSON.stringify(task) + " and idempotency_key=" + JSON.stringify(idempotency) + ". Reuse that exact key and body only for retries of this pasted test. Retain its job ID. The recipient must use its own get_next_job and submit_result flow; do not impersonate it. If it is on demand, ask me to open it and check once. Retrieve the reply here with check_inbox (limit: 3) and get_job, then acknowledge_results using the delivery_cursor returned by check_inbox. Do not assume newer conversation tools exist.";
-        }
-        slot.replaceChildren(copybox("Copy into " + a.name + "’s original conversation", common + protocol + "\n\nReport the exact connection and recipient IDs, request/job ID, conversation ID if provided, and observed sent, answered, and retrieved timestamps. Stop after this one exchange. Do not create acknowledgment messages or a schedule. If a tool is denied, unavailable, or rate-limited, report that and stop; honor Retry-After."));
-      };
-      select.addEventListener("change", draw); draw();
-      section.append(el("p", {}, "Ask this assistant to send a small task to an eligible peer and retrieve the reply here. Copying these instructions does not send anything."), field("Receiving assistant", select), slot);
-      return section;
+    // Live setup status: quick at first, then slower, paused while hidden.
+    let watch = null;
+    function stopWatch() {
+      if (watch) clearTimeout(watch.timer);
+      watch = null;
     }
-    function setupReady(c) { return !!(c?.readiness?.access?.verified && c?.readiness?.peer_collaboration?.verified); }
-    function milestone(title, description, done) {
-      return el("div", { class: "milestone" }, icon(done ? "check" : "clock"), el("div", {}, el("strong", {}, title), el("p", {}, description)));
+    function watchConnection(id) {
+      stopWatch();
+      const a = overview.agents.find(x => x.id === id);
+      if (!a || a.last_seen_at) return;
+      watch = { id, started: Date.now(), page: routeEpoch, timer: null, paused: false };
+      watch.timer = setTimeout(checkConnection, 4e3);
     }
-    function setupStatusSummary(id) {
-      const r = configs.get(id)?.readiness;
-      const contacted = r?.access?.verified, exchanged = r?.peer_collaboration?.verified;
-      return el("div", { class: "setup-status-summary", id: "setup-status-summary", role: "status" },
-        el("strong", {}, exchanged ? "Your assistants have exchanged work" : contacted ? "Connection contacted" : "Waiting for your assistant"),
-        el("p", {}, exchanged ? "An answer was returned and retrieved. You can keep working in your assistants." : contacted ? "Hitchhike has heard from this connection. Exchanges will appear in Activity." : "This updates when your assistant connects. You can finish setup now and return to your conversation."),
-        el("p", { class: "small muted" }, r?.background?.verified ? "Background checks verified." : "Background checks are not verified yet."));
+    function resumeWatch() {
+      if (!watch) return;
+      watch.paused = false;
+      clearTimeout(watch.timer);
+      watch.timer = setTimeout(checkConnection, 300);
     }
-    function evidence(id) {
-      const c = configs.get(id);
-      if (!c) return el("div", {});
-      const r = c.readiness;
-      return el("div", { class: "readiness", id: "setup-evidence" },
-        milestone("Connection access", r.access.verified ? "Authenticated contact " + ago(r.access.last_seen_at) + "." : "Waiting for the assistant to make its first authenticated request.", r.access.verified),
-        milestone("Assistants working together", r.peer_collaboration?.verified ? "A request between two distinct connections was answered and retrieved. This verifies the connections, not which individual app or Dot used them." : "No completed and retrieved peer exchange yet. This will update when your assistants work together.", r.peer_collaboration?.verified));
-    }
-    function updateSetupEvidence(id) {
-      const old = $("#setup-evidence");
-      if (old && configs.has(id)) old.replaceWith(evidence(id));
-      const slot = $("#test-status");
-      if (slot) slot.replaceChildren(testStatus(id));
-      const summary = $("#setup-status-summary");
-      if (summary) summary.replaceWith(setupStatusSummary(id));
-    }
-    function testJob(id) {
-      return overview.jobs.find((j) => j.to === id && j.inputs?.connection_test);
-    }
-    function testVerified(j) {
-      return !!(j?.status === "completed" && j.result?.validation?.ok && j.inputs?.expected_response && (j.result.summary === j.inputs.expected_response || (j.result.body || "").trim() === j.inputs.expected_response));
-    }
-    function testStatus(id) {
-      const j = testJob(id);
-      if (!j) return el("p", { class: "muted small" }, "The test asks for a short marker. It does not browse, access files, or change other services.");
-      if (testVerified(j)) return note("The expected answer came back", "The agent picked up the test and returned the requested marker. Review and acknowledge it to complete retrieval.", btn("Review result", "#/jobs/" + encodeURIComponent(j.id), true), "success");
-      if (j.status === "completed") return note("Review the returned answer", "An answer arrived, but it did not match the expected marker. Check the full result before retrying.", btn("Review result", "#/jobs/" + encodeURIComponent(j.id), true));
-      if (OPEN.has(j.status)) return note(statusNames[j.status] || j.status, "The test is queued or running. Ask an on-demand assistant to check once. A connection does not wake it.", btn("View test", "#/jobs/" + encodeURIComponent(j.id), true));
-      return note("The test did not finish", j.error || "Check access in your assistant, then send a new test.", btn("Review test", "#/jobs/" + encodeURIComponent(j.id), true), "error");
-    }
-    async function setupPage(id, requestedStep) {
-      const a = overview.agents.find((x) => x.id === id);
-      if (!a) throw new Error("This connection no longer exists. Choose another from Your agents.");
-      const c = await configuration(id, true), paired = a.connects === "routine", flow = ["connect", "exchange"];
-      const step = ["done", "access", "instructions", "exchange", "ready"].includes(requestedStep) ? "exchange" : "connect";
-      const index = flow.indexOf(step), g = await getGuide(id, c.onboarding.surface), surface = g.surfaces?.find((x) => x.id === c.onboarding.surface) || g.surfaces?.find((x) => x.id === g.surface), content = el("div", { class: "setup-content" }), error = errorBox();
-      const labels = { connect: "Connect", exchange: "Ready" };
-      const title = step === "connect" ? "Connect " + a.name : "Ready when you are";
-      let editor = null, refreshPairing = () => {};
-      if (step === "connect") {
-        const options = g.surfaces || [];
-        if (options.length > 1) {
-          const select = el("select", { id: "setup-surface" }, options.map((s) => el("option", { value: s.id, selected: s.id === c.onboarding.surface }, s.label)));
-          content.append(el("div", { class: "form-group" }, el("label", { for: "setup-surface" }, "Your assistant’s surface"), select));
-          select.addEventListener("change", async () => {
-            try {
-              await saveStep(id, step, select.value);
-              await render(false);
-            } catch (e) {
-              showError(error, e);
-            }
-          });
-        }
-        const prerequisites = surface?.prerequisites || g.prerequisites || [];
-        if (prerequisites.length) {
-          content.append(note("Before you switch apps", prerequisites[0]));
-          if (prerequisites.length > 1) content.append(el("details", {}, el("summary", {}, "Account requirements and connection identity"), el("ul", {class:"plain-list"}, prerequisites.slice(1).map((text) => el("li", {}, text)))));
-        }
-        if (paired) {
-          editor = instructionEditor(a, c, g, { paired: true, onChange: () => { pairing.delete(id); refreshPairing(); }, onGuide: guide => refreshPairing(guide) });
-          content.append(el("p", {}, "Your assistant loads its saved preferences when it connects and refreshes its configuration. You do not need to paste a second working-instruction prompt."), el("details", { class: "pairing-preferences", open: requestedStep === "instructions" }, el("summary", {}, "Preferences (optional)"), editor.node));
-        }
-        if (paired && HOSTED) {
-          const slot = el("div", {});
-          const showPairing = () => {
-            const pair = pairing.get(id);
-            slot.replaceChildren();
-            if (pair && Date.parse(pair.expires_at) > Date.now()) {
-              const instructions = pair.instructions || pair.guide?.steps?.[0]?.copy;
-              slot.append(instructions ? copybox("One-use pairing instructions", instructions) : el("p", {}, "Create fresh instructions below."), el("p", { class: "small muted" }, "Expires " + date(pair.expires_at) + ". Keep this private."));
-              setTimeout(() => {
-                if (slot.isConnected) showPairing();
-              }, Math.min(2147483647, Math.max(1e3, Date.parse(pair.expires_at) - Date.now())));
-            } else {
-              pairing.delete(id);
-              slot.append(el("p", { class: "muted" }, "Create a one-use pairing instruction, then paste it into " + a.name + "."));
-              const create = btn("Create pairing instructions", async () => {
-                create.disabled = true;
-                try {
-                  if (editor.needsSave()) await editor.save();
-                  const out = await api("/v1/admin/agents/" + encodeURIComponent(id) + "/pairing", { method: "POST", body: {} });
-                  pairing.set(id, out);
-                  showPairing();
-                } catch (e) {
-                  showError(error, e);
-                } finally {
-                  create.disabled = false;
-                }
-              });
-              slot.append(create);
-            }
-          };
-          refreshPairing = showPairing; showPairing();
-          content.append(slot);
-        }
-        if (paired && !HOSTED) {
-          const slot = el("div", { class: "selfhost-pairing" });
-          let currentGuide = g;
-          const pairStep = guide => (guide.surfaces?.find(item => item.id === c.onboarding.surface)?.steps || guide.steps || []).find(item => item.title === "Pair this agent" && item.copy);
-          const showPairing = guide => {
-            if (guide) currentGuide = guide;
-            const instructions = pairStep(currentGuide)?.copy;
-            if (!instructions) { slot.replaceChildren(el("p", {}, "Connection instructions are unavailable. Reload this page to try again.")); return; }
-            const box = copybox("Private connection instructions", instructions, async () => {
-              const generation = epoch, page = routeEpoch;
-              await configuration(id, true);
-              if (editor.needsSave()) await editor.save();
-              const refreshed = await getGuide(id, c.onboarding.surface, null, true);
-              if (generation !== epoch || page !== routeEpoch) throw new Error("The page or session changed. Return to setup before copying these instructions.");
-              const text = pairStep(refreshed)?.copy;
-              if (!text) throw new Error("Connection instructions are unavailable. Reload this page to try again.");
-              currentGuide = refreshed;
-              return text;
-            });
-            if (editor.changed()) $("button", box).textContent = "Save and copy";
-            slot.replaceChildren(el("p", { class: "small muted" }, "Paste this only into " + a.name + ". It includes the private connection key and loads your saved preferences."), box);
-          };
-          refreshPairing = showPairing; showPairing(); content.append(slot);
-        }
-        const selectedSteps = (surface?.steps || g.steps || []).filter(s => !["Confirm access", "Confirm this connection", "Verify in a new cloud run"].includes(s.title) && (!g.accessPrompt || s.copy !== g.accessPrompt) && !(paired && ["Prove the exchange", "Add background checks when ready", "Pair this agent"].includes(s.title)));
-        content.append(el("ol", { class: "instructions" }, selectedSteps.map((s) => el("li", {}, el("strong", {}, s.title || "Continue setup"), el("p", {}, s.text), s.copy ? copybox(setupCopyLabel(s.copy), s.copy) : null))));
-        const recovery = surface?.recovery || g.recovery || [];
-        if (recovery.length) content.append(el("details", {}, el("summary", {}, "Can’t finish this step?"), el("ul", { class: "plain-list" }, recovery.map((t) => el("li", {}, t)))));
-        const sources = surface?.sources || g.sources || [];
-        if (sources.length) content.append(el("details", {}, el("summary", {}, "Provider instructions"), el("ul", { class: "plain-list" }, sources.filter((s) => safeUrl(s.url)).map((s) => el("li", {}, el("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.label))))));
-      }
-      if (step === "exchange") {
-        if (!paired) {
-          editor = instructionEditor(a, c, g);
-          content.append(el("p", {}, "Paste this introduction into the conversation where you’ll use Hitchhike. Your assistant can take it from there."), editor.node);
-        } else content.append(el("p", {}, "Your pairing instructions include the introduction and background preference. Once you’ve pasted them into " + a.name + ", you’re all set here."));
-        content.append(setupStatusSummary(id));
-        const diagnostics = el("details", { class: "setup-diagnostics" }, el("summary", {}, "Connection details and optional tests"), evidence(id), refreshStatus(), peerExchange(a, c), el("section", { class: "form-section" }, el("h2", {}, "Website-to-agent connection test"), el("p", {}, "This separate marker test checks the connection. It does not prove a peer exchange or background execution."), el("div", { id: "test-status" }, testStatus(id))));
-        if (a.can_work) {
-          const send = btn("Send website connection test", async () => {
-            send.disabled = true;
-            try {
-              const old = testJob(id);
-              if (old && OPEN.has(old.status)) {
-                toast("A test is already waiting. Ask your assistant to check for work.");
-                return;
-              }
-              const keyName = "hitchhike:test:" + (session?.workspace?.id || "selfhost") + ":" + id;
-              const key = memory.get(keyName) || crypto.randomUUID();
-              memory.set(keyName, key);
-              await api("/v1/admin/agents/" + encodeURIComponent(id) + "/test", { method: "POST", body: {}, key });
-              memory.del(keyName);
-              await fetchOverview();
-              updateSetupEvidence(id);
-              toast("Test queued. Ask your assistant to check for work once.");
-            } catch (e) {
-              showError(error, e);
-            } finally {
-              send.disabled = false;
-            }
-          });
-          diagnostics.append(el("div", { class: "actions" }, send));
-        } else diagnostics.append(foot("This connection currently sends work only. Enable receiving in its configuration to run an incoming test."));
-        diagnostics.append(el("details", {}, el("summary", {}, "Check connection identity"), copybox("Read-only access check", g.accessPrompt || (paired ? "Use authenticated GET /v1/me with your privately stored connection credential." : "Call connection_status.") + " Confirm your authorized connection is " + a.name + " (" + a.id + "). Report its permissions. Do not send or claim work during this check.")));
-        content.append(diagnostics);
-      }
-      content.append(error);
-      const actions = el("div", { class: "actions" });
-      if (index > 0) actions.append(btn("Back", "#/setup/" + encodeURIComponent(id) + "/" + flow[index - 1], true));
-      const last = step === "exchange";
-      const next = btn(last ? "Finish setup" : "Continue", async () => {
-        const page = routeEpoch;
-        next.disabled = true;
-        try {
-          if (editor?.needsSave()) await editor.save();
-          if (page !== routeEpoch) return;
-          await saveStep(id, last ? "done" : flow[index + 1]);
-          if (page === routeEpoch) route(last ? "#/agents" : "#/setup/" + encodeURIComponent(id) + "/" + flow[index + 1]);
-        } catch (e) {
-          showError(error, e);
-        } finally {
-          next.disabled = false;
-        }
-      }, false, last ? { id: "finish-setup" } : {});
-      const leave = btn(last ? "Return to your agents" : "Save and finish later", async () => {
-        const page = routeEpoch;
-        try { if (editor?.needsSave()) await editor.save(); if (page !== routeEpoch) return; await saveStep(id, step); if (page === routeEpoch) route("#/agents"); }
-        catch (e) { showError(error, e); }
-      }, true);
-      actions.append(...(last ? (c.onboarding.step === "done" ? [leave] : [next, leave]) : [next, leave]));
-      content.append(actions);
-      const identity = a.platform_label && a.name !== a.platform_label ? a.name + " · " + a.platform_label : a.name;
-      return [back(), head(title, [el("span", { class: "setup-identity" }, identity), el("span", { class: "setup-progress-note" }, "Your progress is saved. You can leave and come back at any time.")]), el("div", { class: "setup-layout" }, content, el("ol", { class: "steps", "aria-label": "Setup progress" }, flow.map((s, i) => el("li", { class: i === index ? "current" : "", "aria-current": i === index ? "step" : null }, el("span", { class: "step-count" }, i + 1), labels[s]))))];
-    }
-    function safeUrl(value) {
+    async function checkConnection() {
+      const current = watch;
+      if (!current || current.page !== routeEpoch || !signedIn) return;
+      if (document.hidden) { current.paused = true; return; }
       try {
-        const u = new URL(value);
-        return u.protocol === "https:" && !u.username && !u.password;
-      } catch {
-        return false;
-      }
-    }
-    function field(label, input, help) {
-      const id = input.id || "field-" + crypto.randomUUID();
-      input.id = id;
-      return el("div", { class: "form-group" }, el("label", { for: id }, label), input, help && el("p", {}, help));
-    }
-    function check(label, input, description) {
-      return el("label", { class: "check-row" }, input, el("span", {}, el("strong", {}, label), description && el("small", {}, description)));
-    }
-    function lines(value) {
-      return value.split("\n").map((s) => s.trim()).filter(Boolean);
-    }
-    function categories(label, chosen) {
-      const controls = Object.entries(TYPE_LABELS).map(([id, name]) => {
-        const input = el("input", { type: "checkbox", value: id, checked: chosen.includes(id) });
-        return { input, node: check(name, input) };
-      });
-      return { node: el("fieldset", { class: "choice-group" }, el("legend", {}, label), controls.map((c) => c.node)), read: () => controls.filter((c) => c.input.checked).map((c) => c.input.value) };
-    }
-    async function configurationPage(id) {
-      const a = overview.agents.find((x) => x.id === id);
-      if (!a) throw new Error("This connection is unavailable.");
-      const c = await configuration(id, true), s = c.settings, g = await getGuide(id, c.onboarding.surface).catch(e => { if (e.code === "auth") throw e; return {}; }), error = errorBox(), form = el("form", {});
-      const codeCloud = a.platform === "claude-code" && c.onboarding.surface === "cloud";
-      const backgroundOptions = [["manual", "On demand"], ["scheduled", "Provider schedule"]];
-      if (codeCloud) backgroundOptions.push(["claude_routine", "Claude Code routine adapter"]);
-      else if (s.background.method === "claude_routine") backgroundOptions.push(["claude_routine", "Keep existing external background setup"]);
-      let saving = false;
-      const name = el("input", { value: a.name, maxlength: "80", required: true }), purpose = el("textarea", { value: s.purpose, maxlength: "1200", rows: "3" }), initiative = el("input", { type: "checkbox", checked: s.initiative }), responsibilities = el("textarea", { value: s.standing_responsibilities.join("\n"), rows: "4", placeholder: "One responsibility per line" }), all = el("input", { type: "checkbox", checked: s.permitted_collaborators.includes("*") }), peers = overview.agents.filter((x) => x.id !== id).map((peer) => ({ peer, input: el("input", { type: "checkbox", value: peer.id, checked: s.permitted_collaborators.includes("*") || s.permitted_collaborators.includes(peer.id) }) })), request = categories("May request", s.allowed_request_categories), work = categories("May perform", s.allowed_work_categories), sharing = el("textarea", { value: s.sharing.instructions, rows: "4" }), sources = el("textarea", { value: s.sharing.approved_sources.join("\n"), rows: "3", placeholder: "One approved source per line" }), boundaries = el("textarea", { value: s.authorization_boundaries.join("\n"), rows: "3" }), send = el("input", { type: "checkbox", checked: a.can_request }), receive = el("input", { type: "checkbox", checked: a.can_work }), background = el("select", {}, backgroundOptions.map(([value, label]) => el("option", { value, selected: value === s.background.method }, label))), interval = el("input", { type: "number", min: "1", max: "10080", value: s.background.interval_minutes || "", placeholder: "For example, 60" });
-      all.addEventListener("change", () => peers.forEach((p) => {
-        p.input.disabled = all.checked;
-        if (all.checked) p.input.checked = true;
-      }));
-      peers.forEach((p) => p.input.disabled = all.checked);
-      const recipientEditor = el("details", {}, el("summary", {}, "Sharing rules for individual collaborators"), el("p", {}, "These instructions are communicated to the agent. Hitchhike does not classify arbitrary message text."));
-      const ruleFields = peers.map(({ peer }) => {
-        const rule = s.sharing.recipient_rules.find((r) => r.agent_id === peer.id), instructions = el("textarea", { value: rule?.instructions || "", rows: "3", placeholder: "Specific sharing instructions for " + peer.name }), approved = el("textarea", { value: rule?.approved_sources?.join("\n") || "", rows: "2", placeholder: "Approved sources, one per line" });
-        recipientEditor.append(el("div", { class: "collaborator-settings" }, el("h3", {}, peer.name), field("Sharing instructions", instructions), field("Approved sources", approved)));
-        return { id: peer.id, instructions, approved };
-      });
-      form.append(field("Name", name), field("What is " + a.name + " useful for?", purpose, "This helps your other assistants choose whom to ask. It is a description, not verified capability."), el("section", { class: "form-section" }, el("h2", {}, "Working together"), el("p", {}, "Give this assistant room to use good judgment, within your preferences."), check("Use initiative within my responsibilities", initiative, "Request help for the responsibilities below without waiting for a new prompt each time."), field("Standing responsibilities", responsibilities), el("h3", {}, "Available collaborators"), check("All eligible connections", all, "Existing sending and receiving permissions still apply."), peers.map((p) => check(p.peer.name, p.input, p.peer.platform_label)), !peers.length ? foot("Connect another assistant to give this one a collaborator.") : null), el("section", { class: "form-section" }, el("h2", {}, "Work and permissions"), el("p", {}, "Hitchhike enforces these categories and collaborators. Each provider still controls external actions."), check("Send requests", send), check("Receive requests", receive), el("div", { class: "inline-fields" }, request.node, work.node)), el("section", { class: "form-section" }, el("h2", {}, "Sharing and authorization"), el("p", {}, "Share relevant, deliberately supplied context and approved sources. Never automatically forward complete chats or unrelated private material."), field("Sharing instructions", sharing), field("Approved sources", sources, "One source per line. These are instructions for your assistant; a URL does not itself grant access."), recipientEditor, field("Actions requiring further authorization", boundaries, "One instruction per line. These boundaries do not replace the provider’s own permission controls.")), el("section", { class: "form-section" }, el("h2", {}, "Working instructions"), el("p", {}, "Choose when this assistant may ask for help or be available to others. Instructions are saved separately from permissions."), btn("Edit working instructions", "#/setup/" + encodeURIComponent(id) + "/instructions", true)), el("section", { class: "form-section" }, el("h2", {}, "Background behavior"), el("p", {}, "Choose how this assistant should check. Saving a method does not create a provider schedule or prove it runs."), field("Checking method", background), field("Expected interval in minutes", interval, "For scheduled checks. The actual provider must support and run this cadence."), el("details", { class: "background-disclosure" }, el("summary", {}, "Manual schedule setup and observed status"), backgroundGuideSection(a, c, g), evidence(id))), error);
-      try {
-        const activation = await activationPanel(id, codeCloud);
-        if (activation) form.append(activation);
+        const out = await api("/v1/admin/agents");
+        if (watch !== current || current.page !== routeEpoch) return;
+        for (const fresh of out.agents || []) {
+          const index = overview.agents.findIndex(a => a.id === fresh.id);
+          if (index >= 0) overview.agents[index] = { ...overview.agents[index], ...fresh };
+        }
+        if (overview.agents.find(a => a.id === current.id)?.last_seen_at) { updateSetupStatus(current.id); renderSideAgents(); watch = null; return; }
       } catch (e) {
-        if (e.code === "auth") throw e;
-        form.append(note("Routine settings unavailable", e.message, null, "error"));
+        if (e.code === "auth") return;
       }
-      const save = btn("Save preferences", submit);
-      form.append(el("div", { class: "actions" }, save, btn("Connection setup", "#/setup/" + encodeURIComponent(id) + "/connect", true)));
-      form.addEventListener("input", () => dirty = true);
-      form.addEventListener("submit", (e) => {
-        e.preventDefault();
-        submit();
-      });
-      const reconnect = btn("Replace credentials", async () => {
-        if (!confirm("Replace " + a.name + "’s credentials? Current authorizations and keys stop working. You must authorize or pair again.")) return;
-        reconnect.disabled = true;
-        try {
-          const out = await api("/v1/admin/agents", { method: "POST", body: { id, rotate_token: true } });
-          for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
-          pairing.delete(id);
-          if (out.pairing) pairing.set(id, { expires_at: out.pairing.expires_at, guide: out.guide });
-          await saveStep(id, "connect");
-          await fetchOverview();
-          dirty = false;
-          route("#/setup/" + encodeURIComponent(id) + "/connect");
-        } catch (e) {
-          showError(error, e);
-        } finally {
-          reconnect.disabled = false;
-        }
-      }, true);
-      const disconnect = btn("Disconnect agent", async () => {
-        if (!confirm("Disconnect " + a.name + "? Its authorization stops working and its open requests are canceled. Work already running inside another app may continue.")) return;
-        disconnect.disabled = true;
-        try {
-          await api("/v1/admin/agents/" + encodeURIComponent(id), { method: "DELETE" });
-          configs.delete(id);
-          forgetInstructionDraft(id);
-          pairing.delete(id);
-          for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
-          await fetchOverview();
-          dirty = false;
-          route("#/agents");
-        } catch (e) {
-          showError(error, e);
-        } finally {
-          disconnect.disabled = false;
-        }
-      }, true);
-      form.append(el("details", {}, el("summary", {}, "Connection access and recovery"), el("p", {}, "Repeat authorization in the provider when adding a permission. Replace credentials only when you need to revoke the existing authorization. Disconnecting cannot stop work already running in another app."), el("div", { class: "actions" }, reconnect, disconnect)));
-      async function submit() {
-        if (saving || !form.reportValidity()) return;
-        saving = true;
-        save.disabled = true;
+      if (watch !== current) return;
+      const elapsed = Date.now() - current.started;
+      const delay = elapsed < 60e3 ? 4e3 : elapsed < 180e3 ? 8e3 : elapsed < 600e3 ? 15e3 : elapsed < 1800e3 ? 30e3 : elapsed < 3600e3 ? 60e3 : 0;
+      if (delay) current.timer = setTimeout(checkConnection, Math.max(delay, readPauseUntil - Date.now()));
+      else watch = null;
+    }
+    function ledInner(a) {
+      if (a.last_seen_at) return el("a", { class: "led on", href: "#/agents" }, el("span", { class: "dot" }), a.name + " is connected", el("span", { class: "go" }, "Done", svg("chev")));
+      return el("div", { class: "led" }, el("span", { class: "dot" }), "Waiting for " + a.name + (routine(a) || CODE.has(a.platform) ? "…" : " to connect…"));
+    }
+    function ledNode(a) {
+      return el("div", { class: "ledwrap", id: "setup-led", role: "status", "aria-live": "polite", "data-on": a.last_seen_at ? "true" : "false" }, ledInner(a));
+    }
+    function updateSetupStatus(id) {
+      const a = overview?.agents.find(x => x.id === id), current = $("#setup-led");
+      if (!a || !current) return;
+      if ((current.getAttribute("data-on") === "true") === !!a.last_seen_at) return;
+      const inner = ledInner(a);
+      if (a.last_seen_at) setClass(inner, "lit", true);
+      current.setAttribute("data-on", a.last_seen_at ? "true" : "false");
+      current.replaceChildren(inner);
+      const link = $("#setup-link");
+      if (link && a.last_seen_at) setClass(link, "done", true);
+      $("#pair-renew")?.remove();
+    }
+    function helpToggle(label, items) {
+      const panel = el("div", { class: "help", id: "setup-help", hidden: true }, el("ul", {}, items.map(item => el("li", {}, item))));
+      const toggle = el("button", { type: "button", class: "ghost", "aria-expanded": "false", "aria-controls": "setup-help" }, label, svg("down"));
+      toggle.addEventListener("click", () => { const open = toggle.getAttribute("aria-expanded") !== "true"; toggle.setAttribute("aria-expanded", String(open)); panel.hidden = !open; });
+      return [toggle, panel];
+    }
+    function stations(steps, end) {
+      return el("ol", { class: "route" }, steps.map((step, i) => el("li", { class: "stop" }, el("span", { class: "node" }, i + 1), el("p", {}, rich(step)))),
+        el("li", { class: "stop" }, el("span", { class: "node end" }), el("p", {}, rich(end[0]), end[1] ? el("small", {}, end[1]) : null)));
+    }
+    function copyField(url) {
+      const parsed = (() => { try { return new URL(url); } catch { return null; } })();
+      const value = el("span", { class: "url", title: url }, parsed ? [parsed.host, el("i", {}, parsed.pathname)] : url);
+      const button = el("button", { type: "button", class: "btn sm", "aria-label": "Copy link" }, svg("copy"), el("span", {}, "Copy"));
+      button.addEventListener("click", () => copyText(url, button, value));
+      return el("div", { class: "field" }, value, button);
+    }
+    const SAY = name => ["Say ", ["“Set up Hitchhike”"], " in " + name];
+    function mcpCopy(a) {
+      const connect = ["Connect " + a.name];
+      if (OPENAI.has(a.platform)) return {
+        lead: "Copy this link, then add it in ChatGPT on a computer.", where: "In ChatGPT on the web",
+        steps: [["Open ", ["Settings → Security and login"], " and turn on ", ["Developer mode"]], ["Open ", ["Plugins"], ", choose ", ["Add (+)"], " and paste the link"], ["Sign in and click ", connect]],
+        end: [["Say ", ["“Set up Hitchhike”"], " in ChatGPT"], "Dots and Codex use the same plugin."],
+        help: ["Don’t see Developer mode?", ["Developer mode and custom plugins are on ChatGPT’s website, on a computer. Once Hitchhike is added there, it works in the ChatGPT app on your phone too.", "Work and school accounts may need an admin to allow custom plugins.", "In Dots, open your dot’s profile → Customize → Plugins and select Hitchhike.", el("span", {}, "Using the Codex CLI on its own? ", el("a", { href: "#/connect/codex", onclick: arm("codex") }, "Set up Codex"), ".")]],
+      };
+      if (a.platform === "grok") return {
+        lead: "Copy this link, then add it in Grok.", where: "In Grok",
+        steps: [["Open ", ["grok.com/connectors"]], ["Choose ", ["New Connector → Custom"], " and paste the link"], ["Sign in and tap ", connect]],
+        end: [SAY("Grok")],
+        help: ["Can’t add a connector?", ["Business and Enterprise accounts may need an admin to allow custom connectors.", "Grok chat and Grok Bot connect separately. Add Grok Bot from Your assistants."]],
+      };
+      return {
+        lead: "Copy this link, then add it in the Claude app.", where: "In the Claude app",
+        steps: [["Open ", ["Settings → Connectors"]], ["Tap ", ["Add custom connector"], " and paste the link"], ["Sign in and tap ", connect]],
+        end: [["Say ", ["“Set up Hitchhike”"], " in any Claude chat"], "It works in Claude Duet too."],
+        help: ["Don’t see Add custom connector?", ["On iPhone it’s under Settings → Connectors → +. On a computer, it’s Settings → Connectors at claude.ai.", "If your phone doesn’t show it, add Hitchhike once at claude.ai on a computer. Every Claude app on your account, Duet included, then has it.", "Team and Enterprise plans may need an admin to allow custom connectors.", "When Claude asks, allow Hitchhike’s tools. They only reach your own workspace."]],
+      };
+    }
+    async function setupPage(id) {
+      const a = overview.agents.find((x) => x.id === id);
+      if (!a) throw new Error("This connection no longer exists. Choose another from Your assistants.");
+      const c = await configuration(id, true).catch(e => { if (e.code === "auth") throw e; return configs.get(id) || null; });
+      const g = await getGuide(id, c?.onboarding?.surface).catch(e => { if (e.code === "auth") throw e; return null; });
+      if (routine(a)) return pairSetup(a, c, g);
+      if (COMPUTER.has(a.platform) && isPhone()) return computerHandoff(a, g);
+      if (CODE.has(a.platform)) return codeSetup(a, g);
+      const copy = mcpCopy(a), url = mcpUrl(g);
+      return el("div", { class: "setup" }, flowTop(), route2(tile(a.platform, "lg", a.name), busTile(), a.last_seen_at),
+        el("h1", { class: "h1" }, "Add Hitchhike to " + a.name), el("p", { class: "lead" }, copy.lead),
+        url ? copyField(url) : el("p", { class: "error-text" }, "This connection’s link isn’t available right now. Reload the page to try again."),
+        el("h2", { class: "label steps" }, copy.where), stations(copy.steps, copy.end),
+        el("div", { class: "dock" }, helpToggle(copy.help[0], copy.help[1])), ledNode(a));
+    }
+    function pasteLine(platform, command) {
+      const [add, login] = command.split("\n").map(line => line.trim()).filter(Boolean);
+      if (platform === "codex") return { text: "Add Hitchhike for me: run " + add + (login ? ", then tell me to run " + login + " and sign in." : ", then tell me to restart Codex."), marks: [add, login].filter(Boolean) };
+      return { text: "Add Hitchhike for me: run " + add + (HOSTED ? ", then tell me to type /mcp and choose Hitchhike to sign in." : ", then tell me to type /mcp to check it’s connected."), marks: [add, "/mcp"] };
+    }
+    function marked(line) {
+      const nodes = [];
+      let rest = line.text;
+      while (rest) {
+        const hits = line.marks.map(mark => [rest.indexOf(mark), mark]).filter(([at]) => at >= 0).sort((x, y) => x[0] - y[0]);
+        if (!hits.length) { nodes.push(rest); break; }
+        const [at, mark] = hits[0];
+        if (at) nodes.push(rest.slice(0, at));
+        nodes.push(el("span", { class: "cmd" }, mark));
+        rest = rest.slice(at + mark.length);
+      }
+      return nodes;
+    }
+    function codeSetup(a, g) {
+      const command = terminalCommand(g, a.platform), line = command ? pasteLine(a.platform, command) : null, codex = a.platform === "codex";
+      const body = el("p", {}, el("span", { class: "pr", "aria-hidden": "true" }, "›"), line ? marked(line) : "This connection’s command isn’t available right now. Reload the page to try again.", el("span", { class: "caret", "aria-hidden": "true" }));
+      const copyLine = el("button", { type: "button", class: "btn" }, svg("copy"), el("span", {}, "Copy line"));
+      if (line) copyLine.addEventListener("click", () => copyText(line.text, copyLine, body)); else copyLine.disabled = true;
+      const segment = id => el("a", { href: "#/connect/" + id, "aria-current": a.platform === id ? "page" : null, onclick: arm(id) }, ASSETS["assets/agents/" + ART[id][0]] ? el("img", { src: ASSETS["assets/agents/" + ART[id][0]], alt: "" }) : null, labelOf(id));
+      const manual = el("div", { class: "help", id: "run-yourself", hidden: true }, el("p", { class: "flush" }, "Run this in a terminal on the computer where you use " + a.name + "."), command ? copybox("Command", command) : null);
+      const help = el("div", { class: "help", id: "mcp-help", hidden: true }, el("ul", {}, (codex
+        ? ["Run codex mcp list to check Hitchhike was added.", "If sign-in didn’t finish, run codex mcp login hitchhike again.", "Using the ChatGPT plugin in Codex already? You don’t need this as well."]
+        : ["Restart Claude Code, then type /mcp again.", "Run claude mcp list to check Hitchhike was added for your user.", "If an older Hitchhike entry exists, remove it with claude mcp remove hitchhike, then paste the line again."]).map(text => el("li", {}, text))));
+      const reveal = (button, panel) => button.addEventListener("click", () => { const open = panel.hidden; panel.hidden = !open; button.setAttribute("aria-expanded", String(open)); });
+      const runYourself = el("button", { type: "button", "aria-expanded": "false", "aria-controls": "run-yourself" }, "Or run it yourself"), missing = el("button", { type: "button", "aria-expanded": "false", "aria-controls": "mcp-help" }, codex ? "Don’t see Hitchhike in Codex?" : "Don’t see Hitchhike in /mcp?");
+      reveal(runYourself, manual); reveal(missing, help);
+      const steps = codex
+        ? [["Paste the line and approve the command"], HOSTED ? ["Run ", ["codex mcp login hitchhike"], " and click ", ["Connect " + a.name], " in your browser"] : ["Restart Codex so it loads Hitchhike"]]
+        : [["Paste the line and approve the command"], HOSTED ? ["Type ", ["/mcp"], ", pick Hitchhike and click ", ["Connect " + a.name], " in your browser"] : ["Type ", ["/mcp"], " to check Hitchhike is connected"]];
+      return el("div", { class: "setup-split" },
+        el("section", { class: "copy" }, flowTop(), route2(tile(a.platform, "lg", a.name), busTile(), a.last_seen_at), el("h1", { class: "h1" }, "Add Hitchhike to " + a.name), el("p", { class: "lead" }, "Paste one line into " + a.name + ". It adds Hitchhike for you."),
+          el("nav", { class: "seg", "aria-label": "Coding assistant" }, segment("claude-code"), segment("codex")),
+          stations(steps, [SAY(a.name)]), el("div", { class: "aux" }, runYourself, missing), manual, help),
+        el("section", { class: "side" }, el("div", { class: "term" }, el("div", { class: "tbar" }, el("span", { class: "lights", "aria-hidden": "true" }, el("i", {}), el("i", {}), el("i", {})), el("span", { class: "ttitle" }, a.name), copyLine), el("div", { class: "tbody" }, body)), ledNode(a)));
+    }
+    function computerHandoff(a, g) {
+      const command = CODE.has(a.platform) ? terminalCommand(g, a.platform) : null, line = command ? pasteLine(a.platform, command) : null;
+      const page = location.origin + location.pathname + "#/setup/" + encodeURIComponent(a.id), shown = page.replace(/^https?:\/\//, "");
+      const text = line ? line.text : "Add Hitchhike to " + a.name + " from a computer: open this link, sign in, and follow the three steps.";
+      const message = el("p", {}, text), share = el("button", { type: "button", class: "btn lg block" }, svg("share"), el("span", {}, "Send to my computer")), copyInstead = el("button", { type: "button", class: "btn quiet lg block" }, el("span", {}, "Copy instead"));
+      share.addEventListener("click", () => shareText({ title: "Add Hitchhike to " + a.name, text, url: page }, share, message, text + "\n" + page));
+      copyInstead.addEventListener("click", () => copyText(text + "\n" + page, copyInstead, message));
+      const lead = OPENAI.has(a.platform) ? "ChatGPT adds Hitchhike from its website, so start there. Once it’s added, it works on this phone too." : a.name + " runs on your computer, so that’s where Hitchhike gets added. Send yourself this and pick up there.";
+      return el("div", { class: "setup handoff" }, flowTop(),
+        el("div", { class: "trip", "aria-hidden": "true" }, el("span", { class: "stn" }, el("span", { class: "ring" }, svg("phone")), el("small", {}, "This phone")), el("span", { class: "line" }), el("span", { class: "stn" }, el("span", { class: "ring on" }, svg("computer")), el("small", {}, "Your computer"))),
+        el("h1", { class: "h1" }, a.name + " needs a computer once"), el("p", { class: "lead" }, lead),
+        el("figure", { class: "msg" }, el("figcaption", {}, el("span", { class: "who" }, tile(a.platform, "mini", a.name), line ? "Paste this into " + a.name + " on your computer" : "Open this on your computer")), message, el("span", { class: "url-line" }, shown)),
+        el("div", { class: "dock stack" }, share, copyInstead, el("a", { class: "alt", href: "#/add" }, "Add an assistant that works on this phone"), el("p", { class: "foot" }, "Sign in there with the same account.")), ledNode(a));
+    }
+    function pairSetup(a, c, g) {
+      const minutes = requestedInterval(a, c), scheduled = !!SCHEDULED[a.platform], hostedPairing = HOSTED, pageEpoch = routeEpoch;
+      const issuedKey = "hitchhike:pairing-issued:" + (session?.workspace?.id || "selfhost") + ":" + a.id + ":" + (a.created_at || "");
+      const message = el("p", { id: "pair-message", class: "clamp" }, hostedPairing ? "Getting a fresh one-time code…" : "");
+      const whole = el("button", { type: "button", class: "more-text", "aria-controls": "pair-message", "aria-expanded": "false" }, "Show the whole message");
+      whole.addEventListener("click", () => { whole.dataset.opened = "true"; setClass(message, "clamp", false); whole.hidden = true; });
+      const copyButton = el("button", { type: "button", class: "btn lg", disabled: true }, svg("copy"), el("span", {}, "Copy message"));
+      const shareButton = el("button", { type: "button", class: "ib lg", "aria-label": "Share message", disabled: true }, svg("share"));
+      const error = errorBox();
+      let text = "", renewTimer = null;
+      const ready = value => {
+        text = value || "";
+        message.textContent = text || "This message isn’t available right now. Reload the page to try again.";
+        setClass(message, "aside", !text); setClass(message, "clamp", !!text && !whole.dataset.opened);
+        whole.hidden = !text || !!whole.dataset.opened;
+        copyButton.disabled = shareButton.disabled = !text;
+      };
+      copyButton.addEventListener("click", () => copyText(text, copyButton, message));
+      shareButton.addEventListener("click", () => shareText({ title: "Message for " + a.name, text }, shareButton, message, text));
+      const renewLater = expiresAt => {
+        clearTimeout(renewTimer);
+        // Replace a code only once it has expired, so a copied message stays valid.
+        renewTimer = setTimeout(() => { if (pageEpoch === routeEpoch && !overview?.agents.find(x => x.id === a.id)?.last_seen_at) issue(); }, Math.min(2147483647, Math.max(1e3, Date.parse(expiresAt) - Date.now())));
+      };
+      async function issue() {
+        if (!hostedPairing) { const fresh = await getGuide(a.id, c?.onboarding?.surface, true).catch(() => g); ready(guideSteps(fresh).find(step => step.title === "Pair this agent" && step.copy)?.copy); return; }
         error.hidden = true;
         try {
-          const changes = {};
-          if (name.value.trim() !== a.name) changes.name = name.value.trim();
-          if (send.checked !== a.can_request) changes.can_request = send.checked;
-          if (receive.checked !== a.can_work) changes.can_work = receive.checked;
-          if (JSON.stringify(work.read()) !== JSON.stringify(a.work_types || [])) changes.work_types = work.read();
-          if (Object.keys(changes).length) {
-            await api("/v1/admin/agents", { method: "POST", body: { id, ...changes } });
-            for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
-          }
-          const result = await api("/v1/agents/" + encodeURIComponent(id) + "/collaboration", { method: "PUT", body: { expected_version: c.version, purpose: purpose.value, initiative: initiative.checked, standing_responsibilities: lines(responsibilities.value), permitted_collaborators: all.checked ? ["*"] : peers.filter((p) => p.input.checked).map((p) => p.peer.id), allowed_request_categories: request.read(), allowed_work_categories: work.read(), sharing: { instructions: sharing.value, approved_sources: lines(sources.value), recipient_rules: ruleFields.filter((r) => r.instructions.value.trim() || r.approved.value.trim()).map((r) => ({ agent_id: r.id, instructions: r.instructions.value, approved_sources: lines(r.approved.value) })) }, authorization_boundaries: lines(boundaries.value), background: { method: background.value, interval_minutes: background.value === "scheduled" && interval.value ? Number(interval.value) : null } } });
-          configs.set(id, result);
-          for (const key of guides.keys()) if (key === id || key.startsWith(id + ":")) guides.delete(key);
-          dirty = contextDrafts.size > 0 || instructionDrafts.size > 0;
-          await fetchOverview();
-          toast("Preferences saved. Your agent reads them on its next check. Added provider permissions may need fresh authorization.");
-          await render(false);
+          const held = pairing.get(a.id);
+          const out = held && Date.parse(held.expires_at) > Date.now() + 30e3 ? held : await api("/v1/admin/agents/" + encodeURIComponent(a.id) + "/pairing", { method: "POST", body: {} });
+          pairing.set(a.id, { expires_at: out.expires_at, instructions: out.instructions });
+          tabMemory.set(issuedKey, out.expires_at);
+          if (pageEpoch !== routeEpoch) return;
+          ready(out.instructions);
+          renewLater(out.expires_at);
         } catch (e) {
-          showError(error, e);
-        } finally {
-          saving = false;
-          save.disabled = false;
+          if (e.code === "auth") return;
+          ready(""); showError(error, e);
         }
       }
-      return [back(), head(a.name, a.platform_label + " · Collaboration preferences", btn("Setup instructions", "#/setup/" + encodeURIComponent(id) + "/connect", true)), el("div", { class: "split" }, form, el("aside", { class: "aside-note" }, el("h3", {}, "Changes travel with the work"), el("p", {}, "Your assistant refreshes these preferences when it starts or continues an exchange."), el("h3", {}, "Connection identity"), el("p", { class: "code-key" }, a.id), ["dot", "chatgpt"].includes(a.platform) ? el("p", {}, "ChatGPT and Dots can share this authorization. A label does not create an independently routable assistant.") : null, el("h3", {}, "Access and permission"), el("p", {}, "Ordinary preference edits preserve authorization. Adding a permission can require reconnecting in the provider.")))];
+      const intervalLabel = el("span", { class: "slab" }, minutes ? "Checks every " + every(minutes) : "Checks when you ask");
+      const select = el("select", { "aria-label": "How often " + a.name + " checks for requests" }, [...INTERVALS.map(value => el("option", { value: String(value), selected: value === minutes }, "Every " + every(value))), el("option", { value: "off", selected: !minutes }, "Only when I ask")]);
+      select.addEventListener("change", async () => {
+        const enabled = select.value !== "off", value = enabled ? Number(select.value) : null;
+        select.disabled = true;
+        try {
+          const latest = await configuration(a.id, true);
+          const out = await api("/v1/agents/" + encodeURIComponent(a.id) + "/collaboration", { method: "PUT", body: { expected_version: latest.version, setup_background: { enabled, interval_minutes: value } } });
+          configs.set(a.id, out); configFetchedAt.set(a.id, Date.now()); forgetGuides(a.id); pairing.delete(a.id);
+          intervalLabel.textContent = enabled ? "Checks every " + every(value) : "Checks when you ask";
+          lead.textContent = leadText(enabled ? value : null);
+          await issue();
+          toast("Updated. Send " + a.name + " the new message; the earlier one no longer works.");
+        } catch (e) { if (e.code !== "auth") showError(error, e); }
+        finally { select.disabled = false; }
+      });
+      const leadText = value => "Send " + a.name + " this message. It connects itself and " + (scheduled ? (value ? "checks for requests every " + every(value) + "." : "checks for requests when you ask.") : "checks in on its own schedule.");
+      const lead = el("p", { class: "lead" }, leadText(minutes));
+      const connected = !!a.last_seen_at;
+      const node = el("div", { class: "setup" }, flowTop(), route2(tile(a.platform, "lg", a.name), busTile(), connected),
+        el("h1", { class: "h1" }, "Add " + a.name), lead,
+        el("figure", { class: "msg" }, el("figcaption", {}, "Message for " + a.name, el("span", { class: "code" }, svg("lock"), hostedPairing ? "One-time code" : "Private key")), message, whole),
+        el("div", { class: "msg-acts" }, copyButton, shareButton),
+        el("p", { class: "foot", id: "pair-renew" }, hostedPairing ? "This code works once. It renews while this page is open." : "This message holds a private key. Send it only to " + a.name + "."),
+        error,
+        scheduled ? el("div", { class: "setting" }, svg("clock"), intervalLabel, el("span", { class: "picker" }, el("span", { class: "pill on-white", "aria-hidden": "true" }, "Change"), select)) : null,
+        el("div", { class: "dock" }), ledNode(a));
+      const offerNew = text2 => {
+        message.textContent = text2;
+        setClass(message, "aside", true); setClass(message, "clamp", false); whole.hidden = true;
+        const again = el("button", { type: "button", class: "pill on-white again" }, "Make a new message");
+        again.addEventListener("click", () => { again.remove(); setClass(message, "aside", false); message.textContent = "Getting a fresh one-time code…"; issue(); });
+        message.parentNode?.append(again);
+      };
+      const held = pairing.get(a.id), recent = Date.parse(tabMemory.get(issuedKey) || "") > Date.now();
+      if (!hostedPairing) ready(guideSteps(g).find(step => step.title === "Pair this agent" && step.copy)?.copy);
+      else if (connected) offerNew(a.name + " is already connected. Make a new message only if you need to pair it again.");
+      // A reload must not silently replace a code someone may have just sent.
+      else if (recent && !(held && Date.parse(held.expires_at) > Date.now() + 30e3)) offerNew("You made a message for " + a.name + " a few minutes ago, and it still works. If you didn’t send it, make a new one; the earlier message then stops working.");
+      else issue();
+      return node;
+    }
+    async function assistantPage(id) {
+      const a = overview.agents.find((x) => x.id === id);
+      if (!a) throw new Error("This connection is unavailable.");
+      const c = await configuration(id, true), s = c.settings, error = errorBox();
+      const saved = el("span", { class: "saved", role: "status", "aria-live": "polite" });
+      // Fields whose failed edit is still on screen; "Saved" waits until they save.
+      let chain = Promise.resolve(), pending = 0;
+      const unsaved = new Set();
+      const mark = (state) => {
+        saved.replaceChildren(...(state === "busy" ? ["Saving…"] : state === "done" ? [svg("check"), "Saved"] : state === "failed" ? ["Couldn’t save"] : []));
+        saved.className = "saved" + (state === "busy" ? " busy" : state === "failed" ? " failed" : "");
+      };
+      mark("done");
+      // Saves run one at a time so each uses the latest settings version.
+      function queue(work, key) {
+        pending++; mark("busy"); if (!unsaved.size) error.hidden = true;
+        const run = chain.then(work).then(() => {
+          if (key) unsaved.delete(key);
+          if (--pending === 0) { mark(unsaved.size ? "failed" : "done"); if (!unsaved.size) error.hidden = true; }
+        }, e => { pending--; if (key) unsaved.add(key); mark("failed"); if (e.code !== "auth") showError(error, e); throw e; });
+        chain = run.catch(() => {});
+        return run;
+      }
+      const saveAgent = changes => queue(async () => {
+        const out = await api("/v1/admin/agents", { method: "POST", body: { id, ...changes } });
+        const index = overview.agents.findIndex(x => x.id === id);
+        if (index >= 0) overview.agents[index] = { ...overview.agents[index], ...(out.agent || changes) };
+        forgetGuides(id); renderSideAgents();
+      });
+      const saveSettings = (patch, key) => queue(async () => {
+        const write = version => api("/v1/agents/" + encodeURIComponent(id) + "/collaboration", { method: "PUT", body: { expected_version: version, ...patch } });
+        let out;
+        try { out = await write(configs.get(id).version); }
+        catch (e) { if (e.status !== 409) throw e; out = await write((await configuration(id, true)).version); }
+        configs.set(id, out); configFetchedAt.set(id, Date.now());
+      }, key);
+      const title = el("h1", { class: "h1", id: "agent-name" }, a.name);
+      const headStatus = () => {
+        if (!a.last_seen_at) return el("p", { class: "st warn" }, el("span", { class: "wait" }), "Not connected yet · ", el("a", { href: "#/setup/" + encodeURIComponent(id) }, "Finish setting up"));
+        const status = assistantStatus(a), detail = status.text.startsWith("Checks") ? status.text.toLowerCase() : status.text.startsWith("Last") ? status.text.toLowerCase() : "checks when you ask";
+        return el("p", { class: "st" + (status.warn ? " warn" : "") }, el("span", { class: status.dot === "idle" ? "idle" : status.dot }), "Connected · " + detail);
+      };
+      const pencil = el("button", { type: "button", class: "ib", "aria-label": "Rename " + a.name }, svg("pencil"));
+      const nameBlock = el("div", {}, el("div", { class: "namerow" }, title, pencil), headStatus());
+      const rename = el("button", { type: "button", class: "pill lg" }, "Rename");
+      pencil.addEventListener("click", () => rename.click());
+      rename.addEventListener("click", () => {
+        const input = el("input", { value: a.name, maxlength: "80", "aria-label": "Name", autocomplete: "off", spellcheck: "false" }), done = el("button", { type: "button", class: "pill lg" }, "Done");
+        const form = el("form", { class: "rename" }, input, done);
+        const finish = async (keep) => {
+          const value = input.value.trim();
+          form.replaceWith(nameBlock); rename.hidden = false;
+          if (!keep || !value || value === a.name) return;
+          const previous = a.name;
+          a.name = value; title.textContent = value; document.title = value + " · Hitchhike";
+          try { await saveAgent({ name: value }); $("#crumb-name") && ($("#crumb-name").textContent = value); }
+          catch { a.name = previous; title.textContent = previous; }
+        };
+        form.addEventListener("submit", e => { e.preventDefault(); finish(true); });
+        done.addEventListener("click", () => finish(true));
+        input.addEventListener("keydown", e => { if (e.key === "Escape") finish(false); });
+        nameBlock.replaceWith(form); rename.hidden = true; input.focus(); input.select?.();
+      });
+      const goodAt = el("input", { id: "good-at", class: "input", value: s.purpose || "", placeholder: GOOD_AT[a.platform] ? "For example, " + GOOD_AT[a.platform].charAt(0).toLowerCase() + GOOD_AT[a.platform].slice(1) : "What it’s good at", maxlength: "1200", autocomplete: "off" });
+      // Only a save the server accepted moves savedPurpose, so after a failure the
+      // next change or blur sends the same text again.
+      let purposeTimer = null, savedPurpose = s.purpose || "", sendingPurpose = null;
+      const flushPurpose = () => {
+        clearTimeout(purposeTimer);
+        const value = goodAt.value.trim();
+        if (value === sendingPurpose || (value === savedPurpose && sendingPurpose === null && !unsaved.has("purpose"))) return;
+        sendingPurpose = value;
+        saveSettings({ purpose: value }, "purpose").then(() => { savedPurpose = value; }, () => {}).finally(() => { if (sendingPurpose === value) sendingPurpose = null; });
+      };
+      goodAt.addEventListener("input", () => { clearTimeout(purposeTimer); purposeTimer = setTimeout(flushPurpose, 900); });
+      goodAt.addEventListener("change", flushPurpose); goodAt.addEventListener("blur", flushPurpose);
+      const toggle = (labelId, title2, detail, key) => {
+        const button = el("button", { type: "button", class: "switch", role: "switch", "aria-checked": a[key] ? "true" : "false", "aria-labelledby": labelId }, el("i", {}));
+        button.addEventListener("click", async () => {
+          const next = button.getAttribute("aria-checked") !== "true";
+          button.setAttribute("aria-checked", String(next)); button.disabled = true;
+          try { await saveAgent({ [key]: next }); a[key] = next; }
+          catch { button.setAttribute("aria-checked", String(!next)); }
+          finally { button.disabled = false; }
+        });
+        return el("div", { class: "row" }, el("span", { class: "rt" }, el("b", { id: labelId }, title2), el("span", {}, detail)), button);
+      };
+      const advanced = el("div", { class: "advanced", id: "advanced", hidden: true });
+      const advButton = el("button", { type: "button", class: "adv", "aria-expanded": "false", "aria-controls": "advanced" }, el("span", { class: "rt" }, el("b", {}, "Advanced"), el("span", {}, "Who it works with, kinds of work, remove")), svg("down", "chev"));
+      let built = false;
+      advButton.addEventListener("click", async () => {
+        const open = advButton.getAttribute("aria-expanded") !== "true";
+        advButton.setAttribute("aria-expanded", String(open)); advanced.hidden = !open;
+        if (open && !built) { built = true; await buildAdvanced(); }
+      });
+      async function buildAdvanced() {
+        const settings = configs.get(id).settings, peers = overview.agents.filter(x => x.id !== id);
+        const everyone = settings.permitted_collaborators.includes("*");
+        const all = el("input", { type: "checkbox", checked: everyone });
+        const boxes = peers.map(peer => ({ peer, input: el("input", { type: "checkbox", value: peer.id, checked: everyone || settings.permitted_collaborators.includes(peer.id), disabled: everyone }) }));
+        // A failed save puts the checkboxes back to what is actually saved.
+        let savedCollaborators = settings.permitted_collaborators;
+        const showCollaborators = list => { all.checked = list.includes("*"); boxes.forEach(box => { box.input.checked = all.checked || list.includes(box.peer.id); box.input.disabled = all.checked; }); };
+        const saveCollaborators = () => {
+          boxes.forEach(box => { box.input.disabled = all.checked; if (all.checked) box.input.checked = true; });
+          const list = all.checked ? ["*"] : boxes.filter(box => box.input.checked).map(box => box.peer.id);
+          saveSettings({ permitted_collaborators: list }).then(() => { savedCollaborators = list; }, () => showCollaborators(savedCollaborators));
+        };
+        all.addEventListener("change", saveCollaborators);
+        boxes.forEach(box => box.input.addEventListener("change", saveCollaborators));
+        const chips = (key, chosen, after) => el("div", { class: "chips", role: "group" }, Object.entries(TYPE_LABELS).map(([type, label]) => {
+          const tick = svg("check"), chip = el("button", { type: "button", "aria-pressed": chosen.includes(type) ? "true" : "false", "data-type": type }, tick, label);
+          const show = on => { chip.setAttribute("aria-pressed", String(on)); tick.style.display = on ? "" : "none"; };
+          show(chosen.includes(type));
+          chip.addEventListener("click", () => {
+            const on = chip.getAttribute("aria-pressed") !== "true";
+            show(on);
+            const values = $$("button", chip.parentNode).filter(item => item.getAttribute("aria-pressed") === "true").map(item => item.dataset.type);
+            saveSettings({ [key]: values }).then(() => after?.(values), () => show(!on));
+          });
+          return chip;
+        }));
+        const reconnect = btn("Replace credentials", async () => {
+          if (!confirm("Replace " + a.name + "’s credentials? Its current sign-in stops working, and you’ll connect it again.")) return;
+          reconnect.disabled = true;
+          try {
+            await api("/v1/admin/agents", { method: "POST", body: { id, rotate_token: true } });
+            forgetGuides(id); pairing.delete(id);
+            await fetchOverview();
+            route("#/setup/" + encodeURIComponent(id));
+          } catch (e) { showError(error, e); } finally { reconnect.disabled = false; }
+        }, true);
+        const remove = el("button", { type: "button", class: "btn danger" }, "Remove " + a.name);
+        remove.addEventListener("click", async () => {
+          if (!confirm("Remove " + a.name + "? Its sign-in stops working and its open requests are canceled. Work already running in another app may continue.")) return;
+          remove.disabled = true;
+          try {
+            await api("/v1/admin/agents/" + encodeURIComponent(id), { method: "DELETE" });
+            configs.delete(id); pairing.delete(id); forgetGuides(id);
+            await fetchOverview();
+            route("#/agents");
+          } catch (e) { showError(error, e); } finally { remove.disabled = false; }
+        });
+        advanced.append(
+          el("h2", {}, "Who it works with"), el("p", {}, "Hitchhike only passes work between the assistants you allow."),
+          el("div", { class: "checks" }, el("label", {}, all, el("span", { class: "who" }, el("span", {}, "All your assistants"), el("small", {}, "Including ones you add later"))), boxes.map(box => { const kind = box.peer.platform_label || labelOf(box.peer.platform); return el("label", {}, box.input, el("span", { class: "who" }, el("span", {}, box.peer.name), kind !== box.peer.name ? el("small", {}, kind) : null)); })),
+          el("h2", {}, "Kinds of work"), el("p", {}, "Hitchhike enforces these. Each app still asks you before acting outside Hitchhike."),
+          el("p", { class: "chip-label" }, "It can ask for"), chips("allowed_request_categories", settings.allowed_request_categories),
+          el("p", { class: "chip-label" }, "It can take on"), chips("allowed_work_categories", settings.allowed_work_categories, values => saveAgent({ work_types: values }).catch(() => {})),
+          el("h2", {}, "Connection"), el("p", {}, "Run setup again if " + a.name + " stops responding. Replacing credentials signs it out everywhere."),
+          el("div", { class: "danger-zone" }, el("a", { class: "btn quiet", href: "#/setup/" + encodeURIComponent(id) }, "Setup steps"), reconnect, remove),
+          el("p", { class: "idline" }, "Connection ID " + a.id));
+        const cloud = a.platform === "claude-code" && c.onboarding?.surface === "cloud";
+        try {
+          const activation = await activationPanel(id, cloud);
+          if (activation) advanced.append(activation);
+        } catch (e) {
+          if (e.code === "auth") throw e;
+          advanced.append(note("Routine settings unavailable", e.message, null, "error"));
+        }
+      }
+      return el("div", { class: "assistant" },
+        el("div", { class: "crumbs" }, el("a", { href: "#/agents" }, "Your assistants"), el("span", { "aria-hidden": "true" }, "/"), el("span", { id: "crumb-name" }, a.name), saved),
+        el("header", { class: "ahead" }, tile(a.platform, "xl", a.name), nameBlock, rename),
+        el("section", { class: "form" }, el("label", { class: "flabel", for: "good-at" }, "Good at"), goodAt, el("p", { class: "hint" }, "Your other assistants read this when deciding whom to ask."),
+          el("div", { class: "group switches" }, toggle("sw-ask", "Can ask your other assistants for help", a.name + " can hand work to them and bring the answer back.", "can_request"), toggle("sw-take", "Can take requests from them", "Your other assistants can send " + a.name + " work.", "can_work")),
+          advButton, advanced, error));
     }
     function conversationState(c) {
       if (c.stopped_at) return {label:"Stopped",tone:"pending",attention:true};
@@ -1125,14 +1117,16 @@ export const WORKSPACE_JS = String.raw`
     async function activityPage() {
       const response = await api("/v1/conversations?limit=100"), conversations = Array.isArray(response) ? response : response.conversations || [], section = el("div", { class: "agent-list" }), filters = el("div", { class: "chips", "aria-label": "Filter activity" });
       let selected = "all";
+      const empty = el("div", {});
       function rows() {
         section.replaceChildren();
+        empty.replaceChildren();
         const shown = conversations.filter((c) => selected === "all" || selected === "open" && c.outstanding_requests > 0 || selected === "attention" && conversationState(c).attention || selected === "done" && c.outstanding_requests === 0);
         for (const c of shown) {
           const status = conversationState(c);
           section.append(el("a", { class: "activity-row", href: "#/conversations/" + encodeURIComponent(c.id) }, el("div", {}, el("strong", {}, c.title), el("p", {}, c.participants.map(who).join(" · "))), el("time", { datetime: c.last_message_at }, ago(c.last_message_at)), state(status.label, status.tone)));
         }
-        if (!shown.length) section.append(el("section", { class: "empty-state" }, el("h2", {}, conversations.length ? "Nothing in this view" : "The first handoff starts in your assistant."), el("p", {}, conversations.length ? "Try another activity filter." : "Ask a connected assistant to consult a peer. Their request, questions, and answers will appear here."), btn("Your agents", "#/agents", true)));
+        if (!shown.length) empty.append(el("section", { class: "empty-state" }, el("h2", {}, conversations.length ? "Nothing in this view" : "The first handoff starts in your assistant."), el("p", {}, conversations.length ? "Try another filter." : "Ask a connected assistant to consult another. Their requests, questions and answers show up here."), btn("Your assistants", "#/agents", true)));
       }
       [["all", "All activity"], ["attention", "Needs attention"], ["open", "In progress"], ["done", "Completed"]].forEach(([value, label]) => filters.append(btn(label, () => {
         selected = value;
@@ -1141,7 +1135,7 @@ export const WORKSPACE_JS = String.raw`
       }, true, { "aria-pressed": value === selected ? "true" : "false", "data-filter": value })));
       rows();
       const legacy = overview.jobs.filter((j) => !j.conversation_id);
-      return [head("Activity", "A window into your agents’ work. Your conversations stay in the apps you use."), filters, section, legacy.length ? el("details", {}, el("summary", {}, "Earlier tasks and connection tests"), el("div", {}, legacy.map((j) => el("a", { class: "activity-row", href: "#/jobs/" + encodeURIComponent(j.id) }, el("div", {}, el("strong", {}, j.title), el("p", {}, who(j.from) + " → " + who(j.to))), state(j.status === "completed" && j.retrieved_at ? "Retrieved" : statusNames[j.status] || j.status, j.status === "failed" ? "failed" : ""))))) : null, foot("Waiting means a request is queued. It does not mean the receiving assistant is awake.")];
+      return el("div", { class: "wide" }, head("Activity", "What your assistants asked each other. Your conversations stay in the apps you use."), filters, section, empty, legacy.length ? el("details", {}, el("summary", {}, "Earlier tasks and connection tests"), el("div", { class: "agent-list" }, legacy.map((j) => el("a", { class: "activity-row", href: "#/jobs/" + encodeURIComponent(j.id) }, el("div", {}, el("strong", {}, j.title), el("p", {}, who(j.from) + " → " + who(j.to))), state(j.status === "completed" && j.retrieved_at ? "Retrieved" : statusNames[j.status] || j.status, j.status === "failed" ? "failed" : ""))))) : null, foot("Waiting means a request is queued. It doesn’t mean the receiving assistant is awake."));
     }
     function messageNode(m) {
       const result = m.result;
@@ -1152,14 +1146,14 @@ export const WORKSPACE_JS = String.raw`
       let expectedVersion = draft?.version ?? conversation.context_version ?? 0;
       const panel = el("details", {}, el("summary", {}, "Shared context"), el("p", {}, "Pin only context you deliberately approve for everyone in this conversation. Text and links travel with requests; this does not grant access to files or external actions."), field("Pinned text and links", text), error);
       text.addEventListener("input", () => { contextDrafts.set(id,{text:text.value,version:expectedVersion});dirty=true; });
-      const reload = btn("Reload saved context", async () => { if (!confirm("Discard this unsaved draft and reload the saved shared context? Copy any text you want to keep first.")) return; contextDrafts.delete(id);dirty=contextDrafts.size>0 || instructionDrafts.size>0;await render(false); }, true, {hidden:true});
+      const reload = btn("Reload saved context", async () => { if (!confirm("Discard this unsaved draft and reload the saved shared context? Copy any text you want to keep first.")) return; contextDrafts.delete(id);dirty=contextDrafts.size>0;await render(false); }, true, {hidden:true});
       const save = btn("Save shared context", async () => {
         const saveEpoch = epoch;
         save.disabled=true;error.hidden=true;
         try {
           await api("/v1/conversations/"+encodeURIComponent(id)+"/context", {method:"PATCH",body:{pinned_context:text.value,expected_version:expectedVersion}});
           if (saveEpoch !== epoch) return;
-          contextDrafts.delete(id);dirty=contextDrafts.size>0 || instructionDrafts.size>0;toast("Shared context saved. The change is recorded in conversation history.");await render(false);
+          contextDrafts.delete(id);dirty=contextDrafts.size>0;toast("Shared context saved. The change is recorded in conversation history.");await render(false);
         } catch(e) {
           if (saveEpoch !== epoch) return;
           contextDrafts.set(id,{text:text.value,version:expectedVersion});dirty=true;
@@ -1291,6 +1285,22 @@ export const WORKSPACE_JS = String.raw`
       children.push(body);
       return children;
     }
+    function safeUrl(value) {
+      try {
+        const u = new URL(value);
+        return u.protocol === "https:" && !u.username && !u.password;
+      } catch {
+        return false;
+      }
+    }
+    function field(label, input, help) {
+      const id = input.id || "field-" + crypto.randomUUID();
+      input.id = id;
+      return el("div", { class: "form-group" }, el("label", { for: id }, label), input, help && el("p", {}, help));
+    }
+    function check(label, input, description) {
+      return el("label", { class: "check-row" }, input, el("span", {}, el("strong", {}, label), description && el("small", {}, description)));
+    }
     async function settingsPage() {
       const settings = await api("/v1/admin/workspace"), w = settings.workspace, usage = settings.usage || {}, limits = settings.limits || {}, error = errorBox(), paused = el("input", { type: "checkbox", checked: w.paused }), form = el("form", {});
       // The legacy self-hosted workspace uses INT_MAX as an unbounded sentinel.
@@ -1309,7 +1319,8 @@ export const WORKSPACE_JS = String.raw`
           save.disabled = false;
         }
       });
-      form.append(el("section", { class: "form-section" }, el("h2", {}, "Conversation history"), el("p", {}, "Completed conversations are preserved together for 30 days after their last message. History with outstanding requests is not removed. Older task records may follow your existing retention setting."), el("p", { class: "muted small" }, "Current task retention: " + w.retention_days + " days.")), el("section", { class: "form-section" }, el("h2", {}, "Workspace activity"), el("p", {}, "Pause intake and updates in this workspace. Existing history stays available. Work already running in a provider may continue."), check("Pause workspace activity", paused)), error, el("div", { class: "actions" }, save), el("section", { class: "form-section" }, el("h2", {}, "Workspace usage"), el("p", {}, usageLabel("connections", "connections") + ". " + usageLabel("jobs_month", "work requests this month") + "."), el("p", { class: "small muted" }, "Replies, clarifications, polling, and transport retries are not additional work requests.")));
+      const email = HOSTED && typeof session?.user?.email === "string" ? session.user.email : "";
+      form.append(el("section", { class: "form-section first" }, el("h2", {}, "Account"), el("p", {}, email ? "Signed in as " + email + "." : HOSTED ? "Signed in." : "Opened with your owner key."), btn("Sign out", signOutNow, true)), el("section", { class: "form-section" }, el("h2", {}, "Conversation history"), el("p", {}, "Completed conversations are preserved together for 30 days after their last message. History with outstanding requests is not removed. Older task records may follow your existing retention setting."), el("p", { class: "muted small" }, "Current task retention: " + w.retention_days + " days.")), el("section", { class: "form-section" }, el("h2", {}, "Workspace activity"), el("p", {}, "Pause intake and updates in this workspace. Existing history stays available. Work already running in a provider may continue."), check("Pause workspace activity", paused)), error, el("div", { class: "actions" }, save), el("section", { class: "form-section" }, el("h2", {}, "Workspace usage"), el("p", {}, usageLabel("connections", "connections") + ". " + usageLabel("jobs_month", "work requests this month") + "."), el("p", { class: "small muted" }, "Replies, clarifications, polling, and transport retries are not additional work requests.")));
       const resources = settings.resources?.workspace;
       const formatCount = (n) => Number(n || 0).toLocaleString();
       form.append(el("p", { class: "small muted" }, formatCount(usage.jobs_day) + " of " + formatCount(limits.jobs_day) + " work requests today · " + formatCount(usage.open_jobs) + " of " + formatCount(limits.open_jobs) + " outstanding."), el("p", { class: "small muted" }, (Number(usage.storage_bytes || 0) / 1048576).toFixed(1) + " of " + (Number(limits.storage_bytes || 0) / 1048576).toFixed(0) + " MiB storage allowance, including history and connection records."));
@@ -1333,13 +1344,13 @@ export const WORKSPACE_JS = String.raw`
           exportButton.disabled = false;
         }
       }, true);
-      form.append(el("section", { class: "form-section" }, el("h2", {}, "Your data"), el("p", {}, "Download your conversations, task results, and connection settings. Credentials are excluded."), exportButton), el("section", { class: "form-section" }, el("h2", {}, "Interface beta"), el("p", {}, "This workspace is using the next Hitchhike experience. The earlier interface remains available."), btn("Open earlier workspace", HOSTED ? "/app?experience=legacy" : "/?experience=legacy", true)), el("section", {class:"form-section"}, el("h2", {}, "Account"), btn("Sign out", () => $("#sign-out").click(), true)));
+      form.append(el("section", { class: "form-section" }, el("h2", {}, "Your data"), el("p", {}, "Download your conversations, task results, and connection settings. Credentials are excluded."), exportButton), el("section", { class: "form-section" }, el("h2", {}, "Earlier workspace"), el("p", {}, "The earlier Hitchhike interface is still available."), btn("Open earlier workspace", HOSTED ? "/app?experience=legacy" : "/?experience=legacy", true)));
       form.addEventListener("input", () => dirty = true);
       form.addEventListener("submit", (e) => {
         e.preventDefault();
         save.click();
       });
-      return [head("Workspace settings", "A few preferences for your private workspace."), el("div", { class: "reading" }, form)];
+      return el("div", { class: "wide" }, head("Settings", "A few preferences for your private workspace."), el("div", { class: "reading" }, form));
     }
     async function activationPanel(id, allowSetup = true) {
       const out = await api("/v1/agents/" + encodeURIComponent(id) + "/activation"), current = out?.activation === void 0 ? out : out.activation;
@@ -1392,7 +1403,7 @@ export const WORKSPACE_JS = String.raw`
       }
       return panel;
     }
-    $("#sign-out").addEventListener("click", async () => {
+    async function signOutNow() {
       try {
         if (HOSTED) await api("/auth/logout", { method: "POST", body: {} });
         if (CLERK) {
@@ -1403,7 +1414,7 @@ export const WORKSPACE_JS = String.raw`
       } catch (e) {
         toast(e.message);
       } finally { signOut(); }
-    });
+    }
     $("#gate-form")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       token = $("#owner-key").value.trim();
@@ -1417,9 +1428,8 @@ export const WORKSPACE_JS = String.raw`
     function start() {
       if (heldDrafts) {
         if (heldDrafts.identity === draftIdentity()) {
-          for (const [key, value] of heldDrafts.instructions) if (overview.agents.some(agent => instructionKey(agent.id) === key)) instructionDrafts.set(key, value);
           for (const [key, value] of heldDrafts.contexts) contextDrafts.set(key, value);
-          dirty = instructionDrafts.size > 0 || contextDrafts.size > 0;
+          dirty = contextDrafts.size > 0;
         }
         heldDrafts = null;
         $("#draft-reauth")?.remove();
@@ -1427,6 +1437,7 @@ export const WORKSPACE_JS = String.raw`
       signedIn = true;
       syncPollScope();
       if (!lastRefreshAt) lastRefreshAt = Date.now();
+      renderAccount();
       $("#gate").hidden = true;
       $("#boot").hidden = true;
       $("#workspace").hidden = false;
@@ -1458,9 +1469,18 @@ export const WORKSPACE_JS = String.raw`
           enable.disabled = false;
         }
       });
-      $("#boot").replaceChildren(head("Meet your next workspace", "A calmer way to connect your agents and keep their conversations together."), el("p", { class: "muted" }, "This beta keeps your existing connections and data. Live Dots/Claude background routing and physical iPhone Safari verification remain release checks. Connecting an assistant does not wake it."), error, el("div", { class: "actions" }, enable, btn("Keep the earlier workspace", HOSTED ? "/app?experience=legacy" : "/?experience=legacy", true)));
+      $("#boot").replaceChildren(head("Meet your next workspace", "A calmer way to connect your assistants and keep their conversations together."), el("p", { class: "muted" }, "This keeps your existing connections and data. Connecting an assistant doesn’t wake it."), error, el("div", { class: "actions" }, enable, btn("Keep the earlier workspace", HOSTED ? "/app?experience=legacy" : "/?experience=legacy", true)));
+    }
+    // Sign-in may carry the assistant someone chose (?assistant=claude). Keep it
+    // as the add-assistant route so it survives the sign-in round trip.
+    function adoptIntent() {
+      const params = new URLSearchParams(location.search), chosen = params.get("assistant");
+      if (params.has("assistant")) history.replaceState(null, "", location.pathname + (chosen && /^[a-z][a-z-]{1,23}$/.test(chosen) && LABELS[chosen] ? "#/connect/" + chosen : location.hash));
+      const r = parseRoute(), link = $("#gate-sign-in");
+      if (link && r.page === "connect" && r.id && LABELS[r.id]) link.setAttribute("href", "/sign-in?return_to=" + encodeURIComponent("/app-next?assistant=" + r.id));
     }
     async function boot() {
+      adoptIntent();
       if (HOSTED) {
         memory.del(KEY);
         if (location.hash.startsWith("#token=")) history.replaceState(null, "", location.pathname + location.search);

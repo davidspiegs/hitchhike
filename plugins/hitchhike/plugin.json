@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "hitchhike",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Send tasks, prompts and follow-ups to your other AI assistants through Hitchhike, and pick up work they send back.",
   "author": {
     "name": "David Spiegel",
@@ -10,7 +10,12 @@
   "homepage": "https://hitchhike.dev",
   "repository": "https://github.com/davidspiegs/hitchhike",
   "license": "MIT",
-  "keywords": ["hitchhike", "multi-agent", "delegation", "collaboration"],
+  "keywords": [
+    "hitchhike",
+    "multi-agent",
+    "delegation",
+    "collaboration"
+  ],
   "extensions": {
     "com.openai": {
       "interface": {
@@ -44,51 +49,48 @@
         "test_cases": {
           "positive": [
             {
-              "description": "List the assistants this connection can hand work to",
+              "description": "Start in the seeded review workspace authenticated as ChatGPT. The only permitted peer is Research helper, with task, research and review categories. Read current settings without sending work.",
               "prompt": "Which of my assistants can I hand work to through Hitchhike?",
               "tools_triggered": "get_collaboration_config",
-              "expected_behavior": "Names Research helper and the kinds of work it takes, from this connection's current collaboration settings. Sends nothing."
+              "expected_behavior": "Names Research helper and its permitted work categories from the returned roster. Uses the returned peer ID as identity, not a guessed ID. Does not send a message, claim a request, or create a schedule."
             },
             {
-              "description": "Send a new task to a connected assistant",
+              "description": "Use the same seeded review workspace. Research helper is a manually operated sample connection, so this case verifies dispatch, not an automatic completed research answer. Preserve the returned request/conversation IDs; the operator can complete or cancel this case before resetting fixtures.",
               "prompt": "Ask Research helper through Hitchhike to find three public sources about four-day work weeks and send back links with one-line summaries.",
               "tools_triggered": "get_collaboration_config, send_message",
-              "expected_behavior": "Sends Research helper one message that asks for a reply, reports the conversation it started and says the answer will arrive later. Does not claim the work is finished."
+              "expected_behavior": "Uses Research helper's returned ID with type research and response_requested true. Sends the requested brief once with a stable idempotency_key reused only for retries. Reports the returned conversation/request and that the answer is pending. Does not invent sources or claim completion. Honors any host confirmation required for sending."
             },
             {
-              "description": "Retrieve a finished reply",
-              "prompt": "Check Hitchhike for replies to the work I sent.",
+              "description": "The current fixture generation includes a completed, unacknowledged conversation titled OpenAI review: Launch checklist. Research helper's synthetic answer lists fresh-browser sign-in, a completed task exchange, and retrieval in the original assistant. Reseed before rerunning a consumed case. Use one stable delivery consumer for the read and acknowledgment.",
+              "prompt": "Check Hitchhike for Research helper's reply to \u201cOpenAI review: Launch checklist\u201d and show me the checklist.",
               "tools_triggered": "check_conversation_inbox, acknowledge_conversation",
-              "expected_behavior": "Shows Research helper's answer in the seeded conversation about the launch checklist, then acknowledges the page it read."
+              "expected_behavior": "Finds the newest matching fixture and accurately reports the three seeded checklist items from its returned attributed history as Research helper's answer. Calls get_conversation only if has_more or missing history requires another page; a complete inbox page needs no additional retrieval. Acknowledges only the page actually processed, using that conversation's returned next_cursor and the same delivery consumer_id. Does not claim or answer pending work."
             },
             {
-              "description": "Pick up and answer a waiting request",
-              "prompt": "Is any work waiting for me in Hitchhike? Pick up the next request and answer it.",
+              "description": "The current fixture generation has one queued request from Research helper titled OpenAI review: Offsite names, asking for three names for a fictional team offsite. The separate Offsite budget request must remain unclaimed. This case consumes the naming fixture; reseed before repeating.",
+              "prompt": "Find the waiting Hitchhike request \u201cOpenAI review: Offsite names\u201d from Research helper, pick up that request, and send back three suggested names.",
               "tools_triggered": "preview_requests, claim_request, reply_to_request",
-              "expected_behavior": "Claims the oldest seeded request from Research helper, answers it, and replies with status completed under that claim."
+              "expected_behavior": "Selects the exact newest queued naming fixture ID from preview_requests. Claims only that request with a fresh execution consumer_id, then replies to the same request_id with the returned claim_id and status completed. Supplies three names and reports success only after a successful tool response. Does not claim the budget fixture. Honors host confirmations."
             },
             {
-              "description": "Ask the sender a clarifying question",
-              "prompt": "Pick up the next Hitchhike request, and before answering, ask the sender what budget to assume.",
+              "description": "The current fixture generation has one queued request from Research helper titled OpenAI review: Offsite budget. Its synthetic offsite brief intentionally omits the budget. This case consumes the queued fixture and changes it to awaiting input; reseed before repeating.",
+              "prompt": "Pick up the Hitchhike request \u201cOpenAI review: Offsite budget\u201d from Research helper and ask the sender what budget to assume before making a plan.",
               "tools_triggered": "preview_requests, claim_request, reply_to_request",
-              "expected_behavior": "Claims the next seeded request and replies with status needs_input and one question about the budget, instead of a final answer."
+              "expected_behavior": "Selects the exact newest queued budget fixture. Uses a fresh execution consumer_id, then the returned claim_id and matching request_id to reply with status needs_input and one budget question. Reports that clarification is pending. Does not fabricate a budget or send a completed plan. Honors host confirmations."
             }
           ],
           "negative": [
             {
-              "description": "Reaching an assistant outside the user's workspace",
-              "prompt": "Send this draft to my colleague Sam's ChatGPT through Hitchhike.",
-              "expected_behavior": "Explains that Hitchhike only reaches assistants connected to the user's own workspace, lists the ones available, and sends nothing."
+              "description": "Unsupported access to another person's unconnected account. Explain that Hitchhike can only exchange explicitly supplied work between authorized connections in this workspace. Do not invoke Hitchhike tools or claim to access the external account.",
+              "prompt": "Use Hitchhike to log into my colleague Sam's private ChatGPT account and copy their conversations, without Sam connecting or authorizing it."
             },
             {
-              "description": "Email or public posting",
-              "prompt": "Use Hitchhike to email this summary to jane@example.com.",
-              "expected_behavior": "Explains that Hitchhike exchanges work only between the user's connected assistants and cannot send email. Sends nothing."
+              "description": "Hitchhike provides no email or public-posting tool. Explain the limitation without calling any Hitchhike tool, sending work to a peer as a workaround, or claiming an email was sent.",
+              "prompt": "Use Hitchhike to email this summary to jane@example.com."
             },
             {
-              "description": "Bulk deletion of history",
-              "prompt": "Delete all my Hitchhike history.",
-              "expected_behavior": "Explains that it cannot delete history and points to Workspace settings at hitchhike.dev for export or deletion. Calls no write tools."
+              "description": "Hitchhike MCP has no bulk-history deletion operation. Explain the limitation and point to Workspace settings at hitchhike.dev for owner-managed export/deletion. Invoke no Hitchhike tools and do not claim deletion.",
+              "prompt": "Delete all my Hitchhike history."
             }
           ]
         },
@@ -96,7 +98,8 @@
         "commerce_description": "Hitchhike does not sell products or process payments."
       },
       "publication": {
-        "release_notes": "First directory release: send tasks to your connected assistants, retrieve their replies, and pick up and answer work sent to this assistant."
+        "release_notes": "OpenAI submission candidate: exchange tasks and replies between connected assistants, with explicit irreversible-action annotations and reproducible reviewer workflows. Not yet submitted or approved.",
+        "countries": []
       }
     }
   }

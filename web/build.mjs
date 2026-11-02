@@ -75,7 +75,7 @@ try {
   const release = /^[A-Za-z0-9._-]{1,64}$/.test(releaseSetting) ? escapeHtml(releaseSetting) : null;
   const bundled = join(temporary, 'pages.mjs');
   await build({ entryPoints: [join(root, 'web/pages.ts')], bundle: true, platform: 'node', format: 'esm', outfile: bundled, logLevel: 'silent' });
-  const { frontendPages, publicDocsText } = await import(pathToFileURL(bundled).href);
+  const { frontendPages, publicDocsText, previewWorkspacePage } = await import(pathToFileURL(bundled).href);
   const assets = await buildLanding({ output: destination });
   const signInHints = `<meta name="hitchhike-sign-in-assets" content="${clerkBundlePaths.map((path) => config.frontendApi + path).join(' ')}">\n  <link rel="dns-prefetch" href="${config.frontendApi}">\n  <link rel="preconnect" href="${config.frontendApi}" crossorigin="anonymous">`;
   const releaseHints = release ? `\n  <meta name="hitchhike-release" content="${release}">` : '';
@@ -93,6 +93,16 @@ try {
   const consentPath = '/_hitchhike-assets/connect.' + createHash('sha256').update(consentScript).digest('hex').slice(0, 16) + '.js';
   await writeFile(join(destination, consentPath.slice(1)), consentScript);
   pages['/connect'] = pages['/connect'].replace('/web/connect.js', consentPath);
+  // Preview deployments have no API or sign-in configured, so the workspace runs on
+  // sample data in the page. Production builds require real configuration and never get this.
+  if (process.env.VERCEL_ENV === 'preview' && missing.length) {
+    const demo = await build({ stdin: { contents: 'import { installPreviewWorkspace } from "./web/preview-demo.ts"; installPreviewWorkspace();', resolveDir: root, loader: 'ts' },
+      bundle: true, minify: true, platform: 'browser', format: 'iife', target: 'es2022', write: false, logLevel: 'silent' });
+    const bytes = demo.outputFiles[0].contents;
+    const demoPath = '/_hitchhike-assets/preview-workspace.' + createHash('sha256').update(bytes).digest('hex').slice(0, 16) + '.js';
+    await writeFile(join(destination, demoPath.slice(1)), bytes);
+    pages['/app-next'] = previewWorkspacePage({ ...config, assets }, demoPath);
+  }
   const securityHeaders = {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',

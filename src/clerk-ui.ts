@@ -46,8 +46,10 @@ export function clerkBootstrap(input: ClerkUiConfig, withUi = false): string {
         if (target.origin === location.origin && !target.username && !target.password && ["/app", "/app-next", "/connect"].includes(target.pathname)) {
           const allowed = ["response_type", "client_id", "redirect_uri", "state", "scope", "code_challenge", "code_challenge_method", "resource"];
           if (allowed.some(function(key) { return target.searchParams.getAll(key).length > 1; })) throw new Error("Ambiguous return path");
+          // The workspace keeps one choice through sign-in: the assistant to add.
+          const intent = target.pathname === "/app-next" && target.searchParams.getAll("assistant").length === 1 && /^[a-z][a-z-]{1,23}$/.test(target.searchParams.get("assistant") || "");
           for (const key of Array.from(target.searchParams.keys())) {
-            if (target.pathname !== "/connect" || !allowed.includes(key)) target.searchParams.delete(key);
+            if (target.pathname === "/connect" ? !allowed.includes(key) : !(intent && key === "assistant")) target.searchParams.delete(key);
           }
           config.returnTo = target.pathname + target.search;
         }

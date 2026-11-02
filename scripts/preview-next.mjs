@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 /** Local review fixture for the actual next-release interface and Worker API.
  * Run: node scripts/preview-next.mjs (or --check to validate fixtures without listening)
- * Only binds 127.0.0.1:4178. All data and generated credentials disappear when
+ * --state=empty shows a brand-new workspace; --state=fresh shows one just after
+ * setup (two assistants connected, one waiting, no exchanges yet). --port=4179
+ * runs a second fixture beside the first. --live rebuilds the page on every load,
+ * so interface edits show on refresh without losing the sample data.
+ * Only binds 127.0.0.1 (port 4178 by default). All data and generated credentials disappear when
  * stopped; no existing database, account, provider, or scheduled worker is used.
  * Server-side fetch is disabled. This is not provider or device validation. */
 import assert from 'node:assert/strict';
@@ -15,8 +19,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const option = name => process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+const fixtureState = option('state') ?? 'full', port = Number(option('port') ?? 4178);
+assert.ok(['empty', 'fresh', 'full'].includes(fixtureState), 'Use --state=empty, --state=fresh or --state=full');
+assert.ok(Number.isInteger(port) && port > 1023 && port < 65536, 'Use a --port above 1023');
 const temporary = await mkdtemp(join(tmpdir(), 'hitchhike-preview-'));
-const base = 'http://127.0.0.1:4178', sqlite = new DatabaseSync(':memory:');
+const base = `http://127.0.0.1:${port}`, sqlite = new DatabaseSync(':memory:');
 const bundle = join(temporary, 'preview-worker.mjs');
 globalThis.fetch = async () => { throw new Error('Local preview cannot contact external providers'); };
 await build({ stdin: { contents: 'export { default as worker } from "./src/index.ts"; export { workspaceHtml } from "./src/workspace-ui.ts";', resolveDir: root }, bundle: true, platform: 'node', format: 'esm', outfile: bundle, logLevel: 'silent' });
@@ -54,67 +62,89 @@ async function call(path, { method = 'GET', token = env.ADMIN_TOKEN, body } = {}
 }
 await call('/v1/workspace/release', { method: 'PUT', body: { enabled: true } });
 const agents = {};
-for (const spec of [
-  { id: 'cleo', name: 'Cleo', platform: 'dot', poll_minutes: 10 },
-  { id: 'claude', name: 'Claude', platform: 'claude', poll_minutes: 60 },
-  { id: 'codex', name: 'Codex', platform: 'codex', poll_minutes: null },
-]) {
-  agents[spec.id] = await call('/v1/admin/agents', { method: 'POST', body: { ...spec, can_request: true, can_work: true, work_types: ['task', 'review', 'research'], poll_minutes: spec.poll_minutes } });
+if (fixtureState === 'fresh') {
+  for (const spec of [
+    { id: 'claude', name: 'Claude', platform: 'claude' },
+    { id: 'grok-bot', name: 'Grok Bot', platform: 'grok-bot' },
+    { id: 'codex', name: 'Codex', platform: 'codex' },
+  ]) {
+    agents[spec.id] = await call('/v1/admin/agents', { method: 'POST', body: { ...spec, can_request: true, can_work: true, work_types: ['task', 'review', 'research', 'summarize', 'monitor', 'digest', 'build'], poll_minutes: null } });
+    await call(`/v1/agents/${spec.id}/onboarding`, { method: 'PATCH', body: { provider: spec.platform, ...(spec.platform === 'codex' ? { surface: 'terminal' } : {}), step: 'connect' } });
+  }
+  await call('/v1/agents/claude/collaboration', { method: 'PUT', body: { purpose: 'Writing, research and planning' } });
+  await call('/v1/agents/grok-bot/collaboration', { method: 'PUT', body: { purpose: 'Quick research and keeping an eye on things', setup_background: { enabled: true, interval_minutes: 10 } } });
+  sqlite.prepare('UPDATE agents SET last_seen_at=? WHERE id=\'claude\'').run(Date.now() - 3 * 60000);
+  sqlite.prepare('UPDATE agents SET last_seen_at=? WHERE id=\'grok-bot\'').run(Date.now() - 4 * 60000);
 }
-for (const [id, purpose, surface, step, responsibilities] of [
-  ['cleo', 'Delegate useful parts of my work and combine the results.', 'dots', 'exchange', ['Bring useful replies back into the originating conversation.']],
-  ['claude', 'Offer a second opinion on plans, wording, and product decisions.', 'chat', 'exchange', ['Ask for missing context before making assumptions.']],
-  ['codex', 'Inspect code and help implement changes when requested.', 'desktop', 'connect', []],
-]) {
-  await call(`/v1/agents/${id}/collaboration`, { method: 'PUT', body: { purpose, standing_responsibilities: responsibilities, initiative: id === 'cleo', background: id === 'codex' ? { method: 'manual', interval_minutes: null } : { method: 'scheduled', interval_minutes: id === 'claude' ? 60 : 10 } } });
-  await call(`/v1/agents/${id}/onboarding`, { method: 'PATCH', body: { provider: agents[id].agent.platform, surface, step } });
+if (fixtureState === 'full') {
+  for (const spec of [
+    { id: 'cleo', name: 'Cleo', platform: 'dot', poll_minutes: 10 },
+    { id: 'claude', name: 'Claude', platform: 'claude', poll_minutes: 60 },
+    { id: 'codex', name: 'Codex', platform: 'codex', poll_minutes: null },
+  ]) {
+    agents[spec.id] = await call('/v1/admin/agents', { method: 'POST', body: { ...spec, can_request: true, can_work: true, work_types: ['task', 'review', 'research'], poll_minutes: spec.poll_minutes } });
+  }
+  for (const [id, purpose, surface, step, responsibilities] of [
+    ['cleo', 'Delegate useful parts of my work and combine the results.', 'dots', 'exchange', ['Bring useful replies back into the originating conversation.']],
+    ['claude', 'Offer a second opinion on plans, wording, and product decisions.', 'chat', 'exchange', ['Ask for missing context before making assumptions.']],
+    ['codex', 'Inspect code and help implement changes when requested.', 'desktop', 'connect', []],
+  ]) {
+    await call(`/v1/agents/${id}/collaboration`, { method: 'PUT', body: { purpose, standing_responsibilities: responsibilities, initiative: id === 'cleo', background: id === 'codex' ? { method: 'manual', interval_minutes: null } : { method: 'scheduled', interval_minutes: id === 'claude' ? 60 : 10 } } });
+    await call(`/v1/agents/${id}/onboarding`, { method: 'PATCH', body: { provider: agents[id].agent.platform, surface, step } });
+  }
+  const send = (to, message, title) => call('/v1/conversations', { method: 'POST', token: agents.cleo.token, body: { to, message, title, type: 'review', constraints: ['Use only the context supplied in this sample exchange.'] } });
+  const ask = await send('claude', 'Review this onboarding plan: choose an assistant, connect it, confirm access, give instructions, and finish with a real exchange. What would make the first run clearer?', 'A clearer first exchange');
+  const requestId = ask.request.id, conversationId = ask.conversation.id;
+  async function claim() { return call(`/v1/requests/${requestId}/claim`, { method: 'POST', token: agents.claude.token, body: { consumer_id: 'preview-claude' } }); }
+  async function reply(claim_id, message, status = 'completed') { return call(`/v1/requests/${requestId}/reply`, { method: 'POST', token: agents.claude.token, body: { claim_id, message, status } }); }
+  let held = await claim();
+  await reply(held.claim_id, 'Should this include people setting up from their phone?', 'needs_input');
+  await call(`/v1/jobs/${requestId}/reply`, { method: 'POST', token: agents.cleo.token, body: { message: 'Yes. Keep each step resumable when they switch apps, and identify desktop-only provider requirements before they begin.' } });
+  held = await claim();
+  await reply(held.claim_id, 'Keep the flow focused on one next step. Save progress before people leave Hitchhike. Show connection access, a successful exchange, and background execution as separate milestones.');
+  await call(`/v1/jobs/${requestId}/reject`, { method: 'POST', token: agents.cleo.token, body: { message: 'Please expand the point about waiting for a reply.' } });
+  held = await claim();
+  await reply(held.claim_id, 'Show who has the request and when the connection last checked. A queued request should explain its verified checking interval. If no interval has been verified, say so and offer a manual check. Keep the earlier answer visible for context.');
+  const inbox = await call('/v1/conversations/inbox?consumer_id=preview-cleo', { token: agents.cleo.token });
+  await call(`/v1/conversations/${conversationId}/acknowledge`, { method: 'POST', token: agents.cleo.token, body: { consumer_id: 'preview-cleo', cursor: inbox.conversations[0].next_cursor } });
+  await call('/v1/agents/cleo/onboarding', { method: 'PATCH', body: { step: 'done' } });
+  await send('claude', 'Give a second opinion on these three onboarding headings: Connect, Give instructions, Try an exchange. Flag any term that needs explanation.', 'Review the setup wording');
+  await send('codex', 'Check the proposed mobile layout for keyboard and viewport risks. Start with the supplied design context; do not change any files.', 'Mobile layout review');
+  // Sample timestamps make the waiting and setup states legible; verification
+  // still comes exclusively from the actual relay exchange above.
+  sqlite.prepare('UPDATE agents SET last_seen_at=? WHERE id IN (\'cleo\',\'claude\')').run(Date.now() - 3 * 60000);
+  sqlite.prepare('UPDATE agents SET last_seen_at=NULL WHERE id=\'codex\'').run();
 }
-const send = (to, message, title) => call('/v1/conversations', { method: 'POST', token: agents.cleo.token, body: { to, message, title, type: 'review', constraints: ['Use only the context supplied in this sample exchange.'] } });
-const ask = await send('claude', 'Review this onboarding plan: choose an assistant, connect it, confirm access, give instructions, and finish with a real exchange. What would make the first run clearer?', 'A clearer first exchange');
-const requestId = ask.request.id, conversationId = ask.conversation.id;
-async function claim() { return call(`/v1/requests/${requestId}/claim`, { method: 'POST', token: agents.claude.token, body: { consumer_id: 'preview-claude' } }); }
-async function reply(claim_id, message, status = 'completed') { return call(`/v1/requests/${requestId}/reply`, { method: 'POST', token: agents.claude.token, body: { claim_id, message, status } }); }
-let held = await claim();
-await reply(held.claim_id, 'Should this include people setting up from their phone?', 'needs_input');
-await call(`/v1/jobs/${requestId}/reply`, { method: 'POST', token: agents.cleo.token, body: { message: 'Yes. Keep each step resumable when they switch apps, and identify desktop-only provider requirements before they begin.' } });
-held = await claim();
-await reply(held.claim_id, 'Keep the flow focused on one next step. Save progress before people leave Hitchhike. Show connection access, a successful exchange, and background execution as separate milestones.');
-await call(`/v1/jobs/${requestId}/reject`, { method: 'POST', token: agents.cleo.token, body: { message: 'Please expand the point about waiting for a reply.' } });
-held = await claim();
-await reply(held.claim_id, 'Show who has the request and when the connection last checked. A queued request should explain its verified checking interval. If no interval has been verified, say so and offer a manual check. Keep the earlier answer visible for context.');
-const inbox = await call('/v1/conversations/inbox?consumer_id=preview-cleo', { token: agents.cleo.token });
-await call(`/v1/conversations/${conversationId}/acknowledge`, { method: 'POST', token: agents.cleo.token, body: { consumer_id: 'preview-cleo', cursor: inbox.conversations[0].next_cursor } });
-await call('/v1/agents/cleo/onboarding', { method: 'PATCH', body: { step: 'done' } });
-await send('claude', 'Give a second opinion on these three onboarding headings: Connect, Give instructions, Try an exchange. Flag any term that needs explanation.', 'Review the setup wording');
-await send('codex', 'Check the proposed mobile layout for keyboard and viewport risks. Start with the supplied design context; do not change any files.', 'Mobile layout review');
-// Sample timestamps make the waiting and setup states legible; verification
-// still comes exclusively from the actual relay exchange above.
-sqlite.prepare('UPDATE agents SET last_seen_at=? WHERE id IN (\'cleo\',\'claude\')').run(Date.now() - 3 * 60000);
-sqlite.prepare('UPDATE agents SET last_seen_at=NULL WHERE id=\'codex\'').run();
 
 const assetPaths = new Map(), assets = {};
 async function collectAssets(directory, relative = '') {
   for (const file of await readdir(directory, { withFileTypes: true })) {
     const name = relative + file.name, path = join(directory, file.name);
     if (file.isDirectory()) await collectAssets(path, name + '/');
-    else if (['.png', '.svg', '.jpg', '.webp'].includes(extname(file.name))) { assets['assets/' + name] = '/assets/' + name; assetPaths.set('/assets/' + name, path); }
+    else if (['.png', '.svg', '.jpg', '.webp', '.woff2'].includes(extname(file.name))) { assets['assets/' + name] = '/assets/' + name; assetPaths.set('/assets/' + name, path); }
   }
 }
 await collectAssets(join(root, 'web/landing/assets'));
 const html = workspaceHtml(env.RELAY_NAME, { hosted: false, apiUrl: base, assets });
-const contentTypes = { '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.webp': 'image/webp' };
+async function page() {
+  if (!process.argv.includes('--live')) return html;
+  const fresh = await build({ entryPoints: [join(root, 'src/workspace-ui.ts')], bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'silent' });
+  const module = await import('data:text/javascript;base64,' + Buffer.from(fresh.outputFiles[0].text).toString('base64'));
+  return module.workspaceHtml(env.RELAY_NAME, { hosted: false, apiUrl: base, assets });
+}
+const contentTypes = { '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2' };
 // Serialize the SQLite shim's HTTP requests so asynchronous D1 batch boundaries
 // remain transactional. The actual deployed runtime uses D1's transaction API.
 let pending = Promise.resolve();
 const server = createServer((incoming, outgoing) => {
   const handle = async () => {
-    if (incoming.headers.host !== '127.0.0.1:4178') { outgoing.writeHead(421); outgoing.end('Use the displayed loopback address.'); return; }
+    if (incoming.headers.host !== `127.0.0.1:${port}`) { outgoing.writeHead(421); outgoing.end('Use the displayed loopback address.'); return; }
     const url = new URL(incoming.url || '/', base);
     if (url.pathname === '/') { outgoing.writeHead(303, { location: '/beta' }); outgoing.end(); return; }
     const asset = assetPaths.get(url.pathname);
     if (asset && incoming.method === 'GET') { outgoing.writeHead(200, { 'content-type': contentTypes[extname(asset)], 'cache-control': 'no-store' }); outgoing.end(await readFile(asset)); return; }
     if (url.pathname === '/beta' && incoming.method === 'GET') {
-      outgoing.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-hitchhike-preview': 'synthetic-in-memory-fixture', 'x-robots-tag': 'noindex' }); outgoing.end(html); return;
+      outgoing.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-hitchhike-preview': 'synthetic-in-memory-fixture', 'x-robots-tag': 'noindex' }); outgoing.end(await page()); return;
     }
     const chunks = []; let bytes = 0;
     for await (const chunk of incoming) { bytes += chunk.length; if (bytes > 2 * 1024 * 1024) { outgoing.writeHead(413); outgoing.end(); return; } chunks.push(chunk); }
@@ -132,11 +162,11 @@ process.once('SIGINT', () => { void close().finally(() => process.exit(0)); });
 process.once('SIGTERM', () => { void close().finally(() => process.exit(0)); });
 server.on('error', error => { console.error(error.message); void close().finally(() => process.exit(1)); });
 if (process.argv.includes('--check')) {
-  assert.ok(html.includes('Your agents')); assert.ok(assetPaths.size > 0);
+  assert.ok(html.includes('Your assistants')); assert.ok(assetPaths.size > 0);
   sqlite.close(); await rm(temporary, { recursive: true, force: true });
-  console.log('Preview fixture passed: three agents, completed clarification/revision, origin retrieval, two pending requests, and production HTML. No port opened.');
+  console.log(fixtureState === 'full' ? 'Preview fixture passed: three agents, completed clarification/revision, origin retrieval, two pending requests, and production HTML. No port opened.' : `Preview fixture passed: ${fixtureState} workspace and production HTML. No port opened.`);
 } else {
-  server.listen(4178, '127.0.0.1', () => {
+  server.listen(port, '127.0.0.1', () => {
     console.log('Local preview: synthetic sample data in memory; provider networking disabled.');
     console.log(base + '/beta#token=' + encodeURIComponent(env.ADMIN_TOKEN));
   });

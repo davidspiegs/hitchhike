@@ -409,7 +409,7 @@ export function resourceOperationForTool(name: string): ResourceOperationName {
     case "reply_to_request": case "ask_question": case "give_up": return "completion";
     case "cancel_job": return "cancel";
     case "claim_request": return "mutation";
-    case "connection_status": case "get_collaboration_config": return "essential_read";
+    case "connection_status": case "get_collaboration_config": case "get_started": return "essential_read";
     case "list_agents": case "list_conversations": return "read";
     default: return "mutation";
   }
